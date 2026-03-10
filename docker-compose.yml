@@ -1,0 +1,69 @@
+services:
+  haproxy:
+    image: docker.io/library/haproxy:3.0.11 # previously 3.3-dev
+    volumes:
+      - /mnt/f/tgtts-qwen3/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - tts1
+      - api1
+      - blips
+    ports:
+      - 5002:5002
+      - 8888:8888
+  api1:
+    build: .
+    command: python -u tts-api.py
+    networks:
+      - default
+    volumes:
+      - /mnt/f/tgtts-qwen3/cache:/workspace/cache:rw
+    environment:
+      - TORCH_USE_CUDA_DSA=1
+      - TORCH_CUDNN_SDPA_ENABLED=1
+      - TORCH_LOG=perf_hints
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  tts1:
+    build: .
+    command: python -u tg_tts_service.py
+    networks:
+      - default
+    volumes:
+      - /mnt/f/tgtts-qwen3/speaker_latents:/workspace/speaker_latents:rw
+      - /mnt/f/tgtts-qwen3/voice_mapping.json:/workspace/voice_mapping.json:rw
+    environment:
+      - TORCH_USE_CUDA_DSA=1
+      - TORCH_CUDNN_SDPA_ENABLED=1
+      - TORCH_LOG=perf_hints
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  blips:
+    build: .
+    command: python -u tg_tts_service_blips_new.py
+    networks:
+      - default
+    volumes:
+      - /mnt/f/tgtts-qwen3/speaker_latents:/workspace/speaker_latents:rw
+      - /mnt/f/tgtts-qwen3/voice_mapping.json:/workspace/voice_mapping.json:rw
+      - /mnt/f/tgtts-qwen3/sfx_mapping.json:/workspace/sfx_mapping.json:rw
+    environment:
+      - TORCH_USE_CUDA_DSA=1
+      - TORCH_CUDNN_SDPA_ENABLED=1
+      - TORCH_LOG=perf_hints
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

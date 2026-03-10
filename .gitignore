@@ -1,4 +1,6 @@
 samples/**/*.wav
 speaker_latents/*.speaker_latent
+speaker_latents/*.blips
 cache/**/*.wav
 test_lines/**/*.wav
+voice_mapping.json
