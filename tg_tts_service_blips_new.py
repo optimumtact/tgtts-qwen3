@@ -287,6 +287,9 @@ def text_to_speech_blips():
 	voice = request.json.get("voice", "")
 	blip_base = request.json.get("blip_base", "")
 	blip_number = request.json.get("blip_number", "")
+	pitch = request.json.get("pitch", "")
+	if pitch == "":
+		pitch = "0"
 	print(voice + " blips, " + "\"" + text + "\"")
 	if use_voice_name_mapping:
 		voice = voice_name_mapping_reversed[voice]
@@ -403,7 +406,8 @@ def text_to_speech_blips():
 					#print(semitones)
 					if semitones != 0:
 						samples = librosa.effects.pitch_shift(samples, sr=sr, n_steps=semitones)
-					
+					if pitch != "0":
+						samples = librosa.effects.pitch_shift(samples, sr=sr, n_steps=int(pitch), bins_per_octave=24)
 					#stretched = librosa.effects.time_stretch(samples, rate=2)
 					new_audio = numpy_to_audiosegment(
 						samples,

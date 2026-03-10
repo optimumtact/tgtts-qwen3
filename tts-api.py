@@ -260,20 +260,10 @@ def text_to_speech_handler(
         final_audio += sentence_audio
         # ""Goldman-Eisler (1968) determined that typical speakers paused for an average of 250 milliseconds (ms), with a range from 150 to 400 ms.""
         # (https://scholarsarchive.byu.edu/cgi/viewcontent.cgi?article=10153&context=etd)
-    if pitch != 0:
-        pitch = 0.5 + (pitch - -12) * (1.5 - 0.5) / (12 - -12)
-        numpy_audio = audiosegment_to_librosawav(final_audio)
-        dtype = numpy_audio.dtype
-        scale = np.finfo(dtype).max ** -1
-        numpy_audio = numpy_audio.astype(np.float32) # use at least float32
-        numpy_audio = numpy_audio * scale
-        shifted_audio = pitch_shifter.shiftpitch(numpy_audio, pitch, normalization=True)
-        dtype = np.float32
-        scale = np.finfo(dtype).max
-        shifted_audio = shifted_audio.clip(-1, +1) # preventively avoid clipping
-        shifted_audio = (shifted_audio * scale).astype(dtype)
-        sf.write(data_bytes, shifted_audio, 24000, format="wav")
-        final_audio = pydub.AudioSegment.from_file(io.BytesIO(data_bytes.getvalue()), "wav")
+    if pitch != 0 and endpoint == "http://haproxy:5003/generate-tts":
+        numpy_audio, sr = audiosegment_to_numpy(final_audio)
+        numpy_audio = librosa.effects.pitch_shift(numpy_audio, sr=sr, n_steps=pitch, bins_per_octave=24)
+        final_audio = numpy_to_audiosegment(numpy_audio, sr)
     print(f"Total time to generate audio: {now() - start_time}")
     start_time = now()
 
@@ -357,7 +347,6 @@ def text_to_speech_handler(
     print(f"ffmpeg time: {now() - start_time}")
 
     start_time = now()
-
     export_audio = io.BytesIO(ffmpeg_result.stdout)
     if "radio" in special_filters:
         radio_audio = pydub.AudioSegment.from_file(random.choice(radio_starts), "wav")
@@ -368,7 +357,7 @@ def text_to_speech_handler(
         new_data_bytes = io.BytesIO()
         radio_audio.export(new_data_bytes, format="ogg")
         export_audio = io.BytesIO(new_data_bytes.getvalue())
-
+    audioseg_for_length = pydub.AudioSegment.from_file(io.BytesIO(export_audio.getvalue()), "ogg")
     print(f"pydub time: {now() - start_time}")
     if endpoint == "http://haproxy:5003/generate-tts":
         tts_jobs[identifier].audio = export_audio.getvalue()
@@ -376,13 +365,15 @@ def text_to_speech_handler(
     else:
         blips_jobs[identifier].audio = export_audio.getvalue()
         blips_jobs[identifier].event.set()
+    
     response = send_file(
         export_audio,
         as_attachment=True,
         download_name="identifier.ogg",
         mimetype="audio/ogg",
     )
-    response.headers["audio-length"] = length
+    response.headers["audio-length"] = audioseg_for_length.duration_seconds
+    del audioseg_for_length
     return response
 
 
@@ -472,7 +463,19 @@ def text_to_speech_radio():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
     identifier = request.args.get("identifier", "")
-    if not tts_jobs[identifier].event.wait(timeout=5):
+
+    timeout = 5
+    start = time.time()
+
+    while identifier not in tts_jobs:
+        if time.time() - start > timeout:
+            print("TIMED OUT WAITING FOR JOB")
+            abort(408)
+        time.sleep(0.05)
+
+    job = tts_jobs[identifier]
+
+    if not job.event.wait(timeout=5):
          print("TIMED OUT WAITING FOR JOB")
          abort(408)
     return radio_handler(tts_jobs[identifier])
@@ -482,6 +485,18 @@ def text_to_speech_blips_radio():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
     identifier = request.args.get("identifier", "")
+
+    timeout = 5
+    start = time.time()
+
+    while identifier not in blips_jobs:
+        if time.time() - start > timeout:
+            print("TIMED OUT WAITING FOR JOB")
+            abort(408)
+        time.sleep(0.05)
+
+    job = blips_jobs[identifier]
+
     if not blips_jobs[identifier].event.wait(timeout=5):
          print("TIMED OUT WAITING FOR JOB")
          abort(408)
