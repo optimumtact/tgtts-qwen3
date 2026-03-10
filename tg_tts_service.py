@@ -28,7 +28,7 @@ import re
 import asyncio
 import soundfile as sf
 from faster_qwen3_tts import FasterQwen3TTS
-
+import time
 class Qwen3_TTS_TG(FasterQwen3TTS):
 	
 	@classmethod
@@ -59,7 +59,6 @@ class Qwen3_TTS_TG(FasterQwen3TTS):
 			torch_dtype=dtype,
 			attn_implementation=attn_implementation,
 		)
-		
 		talker = base_model.model.talker
 		talker_config = base_model.model.config.talker_config
 
@@ -179,7 +178,6 @@ class Qwen3_TTS_TG(FasterQwen3TTS):
 			text,
 			ref_speaker,
 		)
-
 		codec_ids, _ = fast_generate(
 			talker=talker,
 			talker_input_embeds=tie,
@@ -197,7 +195,6 @@ class Qwen3_TTS_TG(FasterQwen3TTS):
 			do_sample=do_sample,
 			repetition_penalty=repetition_penalty,
 		)
-
 		if codec_ids is None:
 			print("Generation returned no tokens")
 			return [np.zeros(1, dtype=np.float32)], self.sample_rate

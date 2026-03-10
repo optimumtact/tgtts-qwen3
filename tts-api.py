@@ -14,6 +14,8 @@ from blake3 import blake3
 from flask import Flask, request, send_file, abort, make_response
 from pydub.silence import detect_leading_silence
 from stftpitchshift import StftPitchShift
+import librosa
+from pydub import AudioSegment
 
 trim_leading_silence = lambda x: x[detect_leading_silence(x) :]
 trim_trailing_silence = lambda x: trim_leading_silence(x.reverse()).reverse()
@@ -25,8 +27,116 @@ radio_starts = ["./on1.wav", "./on2.wav"]
 radio_ends = ["./off1.wav", "./off2.wav", "./off3.wav", "./off4.wav"]
 authorization_token = os.getenv("TTS_AUTHORIZATION_TOKEN", "vote_goof_2024")
 cached_messages = []
-max_to_cache = 10
+max_to_cache = 5
 pitch_shifter = StftPitchShift(1024, 256, 48000)
+
+import threading
+
+def audiosegment_to_numpy(seg):
+	samples = np.array(seg.get_array_of_samples())
+
+	if seg.channels == 2:
+		samples = samples.reshape((-1, 2))
+
+	samples = samples.astype(np.float32) / (1 << (8 * seg.sample_width - 1))
+
+	return samples, seg.frame_rate
+
+def numpy_to_audiosegment(samples, sr, sample_width=2, channels=1):
+	samples_int16 = (samples * 32767).astype(np.int16)
+
+	return AudioSegment(
+		samples_int16.tobytes(),
+		frame_rate=sr,
+		sample_width=sample_width,
+		channels=channels
+	)
+
+
+from scipy.signal import butter, lfilter
+def bandpass(x, sr, low=300, high=3000, order=4):
+	nyq = sr * 0.5
+	b, a = butter(order, [low/nyq, high/nyq], btype='band')
+	return lfilter(b, a, x)
+
+def compress(x, threshold=0.2, ratio=4):
+	y = x.copy()
+	mask = np.abs(y) > threshold
+	y[mask] = np.sign(y[mask]) * (
+		threshold + (np.abs(y[mask]) - threshold) / ratio
+	)
+	return y
+
+def saturate(x, drive=2.5):
+	return np.tanh(drive * x)
+
+def add_radio_noise(x, level=0.004):
+	noise = np.random.normal(0, level, len(x))
+	return x + noise
+
+def am_modulate(x, sr, depth=0.08, freq=60):
+	t = np.arange(len(x)) / sr
+	return x * (1 + depth * np.sin(2 * np.pi * freq * t))
+
+def squelch_tail(sr, length=0.15):
+	n = int(sr * length)
+	noise = np.random.normal(0, 0.02, n)
+	fade = np.linspace(1, 0, n)
+	return noise * fade
+
+def normalize(x, peak=0.8):
+	m = np.max(np.abs(x))
+	if m > 0:
+		x = x / m * peak
+	return x
+
+def ensure_mono(x):
+	if x.ndim > 1:
+		x = x.mean(axis=1)
+	return x
+
+def load_and_match(path, target_sr):
+	audio, sr = sf.read(path)
+	audio = ensure_mono(audio)
+
+	if sr != target_sr:
+		import librosa
+		audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+
+	return audio
+
+def radio_effect(audio, sr):
+	if audio.ndim > 1:
+		audio = audio.mean(axis=1)
+	click_on = load_and_match("mic_click_on.wav", sr)
+	click_off = load_and_match("mic_click_off.wav", sr)
+	static = load_and_match("diffstatic.wav", sr)
+	speech = librosa.resample(audio, orig_sr=sr, target_sr=8000)
+	speech = librosa.resample(speech, orig_sr=8000, target_sr=48000)
+	speech = normalize(speech, 0.5)
+	speech = bandpass(speech, sr)
+	speech = saturate(speech, 2)
+	speech = normalize(speech, 0.7)
+	static = static[:len(speech)]
+	speech = speech + static * 0.2
+	output = np.concatenate([
+		click_on,
+		speech,
+		static[:int(sr*0.1)],
+		click_off
+	])
+
+	output = normalize(output, 0.9)
+
+	return output
+
+tts_jobs = {}
+blips_jobs = {}
+
+class TTSJob:
+    def __init__(self):
+        self.event = threading.Event()
+        self.audio = None
 
 def now() -> int:
     return time.time_ns() // 1_000_000
@@ -51,12 +161,11 @@ def audiosegment_to_librosawav(audiosegment):
     return fp_arr
 
 def text_to_speech_handler(
-    endpoint, voice, text, filter_complex, pitch, blip_number, blip_base, special_filters=[], segment=False,
+    endpoint, voice, text, filter_complex, pitch, blip_number, blip_base, special_filters=[], segment=False, identifier=""
 ):
     filter_complex = filter_complex.replace('"', "")
     data_bytes = io.BytesIO()
     final_audio = pydub.AudioSegment.empty()
-
     start_time = now()
     if segment:
         for sentence in segmenter.segment(text):
@@ -261,7 +370,12 @@ def text_to_speech_handler(
         export_audio = io.BytesIO(new_data_bytes.getvalue())
 
     print(f"pydub time: {now() - start_time}")
-
+    if endpoint == "http://haproxy:5003/generate-tts":
+        tts_jobs[identifier].audio = export_audio.getvalue()
+        tts_jobs[identifier].event.set()
+    else:
+        blips_jobs[identifier].audio = export_audio.getvalue()
+        blips_jobs[identifier].event.set()
     response = send_file(
         export_audio,
         as_attachment=True,
@@ -276,7 +390,8 @@ def text_to_speech_handler(
 def text_to_speech_normal():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
-
+    identifier = request.args.get("identifier", "")
+    tts_jobs[identifier] = TTSJob()
     voice = request.args.get("voice", "")
     text = request.json.get("text", "")
     pitch = request.args.get("pitch", "")
@@ -297,14 +412,16 @@ def text_to_speech_normal():
         "",
         "",
         special_filters,
-        False
+        False,
+        identifier
     )
 
 @app.route("/tts-blips")
 def text_to_speech_blips():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
-
+    identifier = request.args.get("identifier", "")
+    blips_jobs[identifier] = TTSJob()
     voice = request.args.get("voice", "")
     text = request.json.get("text", "")
     pitch = request.args.get("pitch", "")
@@ -328,8 +445,47 @@ def text_to_speech_blips():
         blip_number,
         blip_base,
         special_filters,
-        True
+        True,
+        identifier
     )
+
+def radio_handler(job):
+    base_audio = pydub.AudioSegment.from_file(
+        io.BytesIO(job.audio), "ogg"
+    )
+    samples, sr = audiosegment_to_numpy(base_audio)
+    processed = radio_effect(samples, sr)
+    export_audio = numpy_to_audiosegment(processed, sr)
+    output_bytes = io.BytesIO()
+    export_audio.export(output_bytes, format="ogg")
+    response = send_file(
+        io.BytesIO(output_bytes.getvalue()),
+        as_attachment=True,
+        download_name="identifier.ogg",
+        mimetype="audio/ogg",
+    )
+    response.headers["audio-length"] = export_audio.duration_seconds
+    return response
+
+@app.route("/tts-radio")
+def text_to_speech_radio():
+    if authorization_token != request.headers.get("Authorization", ""):
+        abort(401)
+    identifier = request.args.get("identifier", "")
+    if not tts_jobs[identifier].event.wait(timeout=5):
+         print("TIMED OUT WAITING FOR JOB")
+         abort(408)
+    return radio_handler(tts_jobs[identifier])
+
+@app.route("/tts-blips-radio")
+def text_to_speech_blips_radio():
+    if authorization_token != request.headers.get("Authorization", ""):
+        abort(401)
+    identifier = request.args.get("identifier", "")
+    if not blips_jobs[identifier].event.wait(timeout=5):
+         print("TIMED OUT WAITING FOR JOB")
+         abort(408)
+    return radio_handler(blips_jobs[identifier])
 
 @app.route("/tts-voices")
 def voices_list():
