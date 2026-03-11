@@ -256,50 +256,49 @@ def cap_loudness(seg, max_dbfs=-1.0):
     return seg
 @app.route("/generate-tts")
 def text_to_speech():
-	with tts_lock:
-		text = request.json.get("text", "")
-		voice = request.json.get("voice", "")
-		#print(voice + " says, " + "\"" + text + "\"")
-		if use_voice_name_mapping:
-			voice = voice_name_mapping_reversed[voice]
-		result = None
-		actual_text_found = False
-		with io.BytesIO() as data_bytes:
-			for i, letter in enumerate(text):
-				if letter in letters_to_use:
-					actual_text_found = True
-					break
-			if not actual_text_found:
-				stub_file = AudioSegment.empty()
-				stub_file.set_frame_rate(48000)
-				stub_file.export(data_bytes, format = "wav")
-				result = send_file(io.BytesIO(data_bytes.getvalue()), mimetype="audio/wav")
-				return result
-			with torch.inference_mode():
-				final_letter = text[-1]
-				acceptable_punctuation = [".", "?", "!"]
-				if not final_letter in acceptable_punctuation:
-					#print("Forgot punctuation, adding . ")
-					text += ". "
-				if text and text[0].isalpha() and not text[0].isupper(): # capitalize that shit if they forgot
-					text = text[0].upper() + text[1:]
-				# Inference
-				audio_list, sr = model.generate_voice_clone_tg(
-					text=text, 
-					ref_speaker=voice
-				)
-				sf.write(data_bytes, audio_list[0], sr, format="wav")
-				input_audio, _ = lava_model.load_audio(io.BytesIO(data_bytes.getvalue()), input_sr=24000)
-				output_audio = lava_model.enhance(input_audio, denoise=False).cpu().numpy().squeeze()
-				temp_databytes = io.BytesIO()
-				sf.write(temp_databytes, output_audio, 48000, format="wav")
-				rawsound = AudioSegment.from_file(io.BytesIO(temp_databytes.getvalue()), "wav")  
-				normalizedsound = normalize_to_target(rawsound, -25)
-				normalizedsound = cap_loudness(normalizedsound, max_dbfs=-5)
-				normalizedsound = effects.normalize(rawsound)  
-				normalizedsound.export(temp_databytes, format="wav")
-				result = send_file(io.BytesIO(temp_databytes.getvalue()), mimetype="audio/wav")
-		return result
+	text = request.json.get("text", "")
+	voice = request.json.get("voice", "")
+	#print(voice + " says, " + "\"" + text + "\"")
+	if use_voice_name_mapping:
+		voice = voice_name_mapping_reversed[voice]
+	result = None
+	actual_text_found = False
+	with io.BytesIO() as data_bytes:
+		for i, letter in enumerate(text):
+			if letter in letters_to_use:
+				actual_text_found = True
+				break
+		if not actual_text_found:
+			stub_file = AudioSegment.empty()
+			stub_file.set_frame_rate(48000)
+			stub_file.export(data_bytes, format = "wav")
+			result = send_file(io.BytesIO(data_bytes.getvalue()), mimetype="audio/wav")
+			return result
+		with torch.inference_mode():
+			final_letter = text[-1]
+			acceptable_punctuation = [".", "?", "!"]
+			if not final_letter in acceptable_punctuation:
+				#print("Forgot punctuation, adding . ")
+				text += ". "
+			if text and text[0].isalpha() and not text[0].isupper(): # capitalize that shit if they forgot
+				text = text[0].upper() + text[1:]
+			# Inference
+			audio_list, sr = model.generate_voice_clone_tg(
+				text=text, 
+				ref_speaker=voice
+			)
+			sf.write(data_bytes, audio_list[0], sr, format="wav")
+			input_audio, _ = lava_model.load_audio(io.BytesIO(data_bytes.getvalue()), input_sr=24000)
+			output_audio = lava_model.enhance(input_audio, denoise=False).cpu().numpy().squeeze()
+			temp_databytes = io.BytesIO()
+			sf.write(temp_databytes, output_audio, 48000, format="wav")
+			rawsound = AudioSegment.from_file(io.BytesIO(temp_databytes.getvalue()), "wav")  
+			normalizedsound = normalize_to_target(rawsound, -25)
+			normalizedsound = cap_loudness(normalizedsound, max_dbfs=-5)
+			normalizedsound = effects.normalize(rawsound)  
+			normalizedsound.export(temp_databytes, format="wav")
+			result = send_file(io.BytesIO(temp_databytes.getvalue()), mimetype="audio/wav")
+	return result
 
 @app.route("/tts-voices")
 def voices_list():

@@ -28,7 +28,7 @@ lines = ["We're smokin' filtered crack, you stupid piece of shit, I'll fuckin' k
 		 "This shit ain't nothin' to me, man!"]
 from typing import Generator, Optional, Tuple, Union
 
-root_folder = "F:/rvc_dataset/xtts_ref_wavs_multiple"
+root_folder = "E:\hfc_en-US_F\hifi_captain_voices"
 import io 
 class Qwen3_TTS_TG(FasterQwen3TTS):
 	
@@ -213,7 +213,7 @@ class Qwen3_TTS_TG(FasterQwen3TTS):
 			audio_arrays.append(a)
 		return audio_arrays, sr
 
-model = Qwen3_TTS_TG.from_pretrained("Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+model = Qwen3_TTS_TG.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 from pathlib import Path
 import time
 from LavaSR.model import LavaEnhance2 
@@ -322,14 +322,14 @@ ignore = []
 print("Begin latent generation:")
 from pathlib import Path
 start_time = time.perf_counter()
-folder = Path("F:/rvc_dataset/xtts_ref_wavs_multiple")
+folder = Path("E:\hfc_en-US_F\hifi_captain_voices")
 import tqdm
 for subfolder in tqdm.tqdm(folder.iterdir()):
 	if subfolder.is_dir():
 		if subfolder.name in ignore:
 			continue
-		#if os.path.isfile("./speaker_latents/" + subfolder.name + ".speaker_latent"):
-			#continue
+		if os.path.isfile("./speaker_latents/" + subfolder.name + ".speaker_latent"):
+			continue
 		print(subfolder.name)
 		current_line = 0
 		for line in random.sample(lines, 3):
