@@ -264,7 +264,7 @@ def text_to_speech_handler(
         numpy_audio, sr = audiosegment_to_numpy(final_audio)
         numpy_audio = librosa.effects.pitch_shift(numpy_audio, sr=sr, n_steps=pitch, bins_per_octave=24)
         final_audio = numpy_to_audiosegment(numpy_audio, sr)
-    print(f"Total time to generate audio: {now() - start_time}")
+    #print(f"Total time to generate audio: {now() - start_time}")
     start_time = now()
 
     final_audio.export(data_bytes, format="wav")
@@ -343,8 +343,8 @@ def text_to_speech_handler(
     hh_mm_ss = matched_length.group(1)
     length = hhmmss_to_seconds(hh_mm_ss)
 
-    print(f"ffmpeg result size: {len(ffmpeg_result.stdout)}")
-    print(f"ffmpeg time: {now() - start_time}")
+    #print(f"ffmpeg result size: {len(ffmpeg_result.stdout)}")
+    #print(f"ffmpeg time: {now() - start_time}")
 
     start_time = now()
     export_audio = io.BytesIO(ffmpeg_result.stdout)
@@ -358,7 +358,7 @@ def text_to_speech_handler(
         radio_audio.export(new_data_bytes, format="ogg")
         export_audio = io.BytesIO(new_data_bytes.getvalue())
     audioseg_for_length = pydub.AudioSegment.from_file(io.BytesIO(export_audio.getvalue()), "ogg")
-    print(f"pydub time: {now() - start_time}")
+    #print(f"pydub time: {now() - start_time}")
     if endpoint == "http://haproxy:5003/generate-tts":
         tts_jobs[identifier].audio = export_audio.getvalue()
         tts_jobs[identifier].event.set()
@@ -464,19 +464,19 @@ def text_to_speech_radio():
         abort(401)
     identifier = request.args.get("identifier", "")
 
-    timeout = 5
+    timeout = 10
     start = time.time()
 
     while identifier not in tts_jobs:
         if time.time() - start > timeout:
-            print("TIMED OUT WAITING FOR JOB")
+            #print("TIMED OUT WAITING FOR JOB")
             abort(408)
         time.sleep(0.05)
 
     job = tts_jobs[identifier]
 
-    if not job.event.wait(timeout=5):
-         print("TIMED OUT WAITING FOR JOB")
+    if not job.event.wait(timeout=10):
+         #print("TIMED OUT WAITING FOR JOB")
          abort(408)
     return radio_handler(tts_jobs[identifier])
 
@@ -486,19 +486,19 @@ def text_to_speech_blips_radio():
         abort(401)
     identifier = request.args.get("identifier", "")
 
-    timeout = 5
+    timeout = 10
     start = time.time()
 
     while identifier not in blips_jobs:
         if time.time() - start > timeout:
-            print("TIMED OUT WAITING FOR JOB")
+            #print("TIMED OUT WAITING FOR JOB")
             abort(408)
         time.sleep(0.05)
 
     job = blips_jobs[identifier]
 
-    if not blips_jobs[identifier].event.wait(timeout=5):
-         print("TIMED OUT WAITING FOR JOB")
+    if not job.event.wait(timeout=10):
+         #print("TIMED OUT WAITING FOR JOB")
          abort(408)
     return radio_handler(blips_jobs[identifier])
 

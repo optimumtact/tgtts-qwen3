@@ -196,7 +196,7 @@ class Qwen3_TTS_TG(FasterQwen3TTS):
 			repetition_penalty=repetition_penalty,
 		)
 		if codec_ids is None:
-			print("Generation returned no tokens")
+			#print("Generation returned no tokens")
 			return [np.zeros(1, dtype=np.float32)], self.sample_rate
 
 		# In ICL mode: prepend reference codes before decoding so the codec decoder
@@ -259,7 +259,7 @@ def text_to_speech():
 	with tts_lock:
 		text = request.json.get("text", "")
 		voice = request.json.get("voice", "")
-		print(voice + " says, " + "\"" + text + "\"")
+		#print(voice + " says, " + "\"" + text + "\"")
 		if use_voice_name_mapping:
 			voice = voice_name_mapping_reversed[voice]
 		result = None

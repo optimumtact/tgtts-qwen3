@@ -290,7 +290,7 @@ def text_to_speech_blips():
 	pitch = request.json.get("pitch", "")
 	if pitch == "":
 		pitch = "0"
-	print(voice + " blips, " + "\"" + text + "\"")
+	#print(voice + " blips, " + "\"" + text + "\"")
 	if use_voice_name_mapping:
 		voice = voice_name_mapping_reversed[voice]
 	result = None
