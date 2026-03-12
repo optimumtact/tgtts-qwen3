@@ -27,3 +27,8 @@ curl -X GET "http://localhost:5002/tts?identifier=job9001&voice=Example%20Woman&
 Then play with your choice of player
 
 You can view hte haproxy stats at localhost:8008
+
+The docker compose file is a multi stage build of system deps, python deps and then the actual code
+
+if you want to rebuild python deps for some reason you can with
+`docker compose build --build-arg CACHEBUST=$(date +%s)`

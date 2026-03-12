@@ -36,6 +36,7 @@ services:
     volumes:
       - ./speaker_latents:/workspace/speaker_latents:rw
       - ./voice_mapping.json:/workspace/voice_mapping.json:rw
+      - ./huggingfacecache:/root/.cache/huggingface:rw
     environment:
       - TORCH_USE_CUDA_DSA=1
       - TORCH_CUDNN_SDPA_ENABLED=1
