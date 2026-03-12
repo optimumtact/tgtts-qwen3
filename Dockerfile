@@ -26,7 +26,7 @@ ENV TORCH_CUDA_ARCH_LIST=8.9
 FROM system-deps AS python-deps
 ARG CACHEBUST=1 # Allows us to bust docker build cache.
 WORKDIR /workspace
-
+ENV TORCH_CUDA_ARCH_LIST=8.9
 # Install Python dependencies
 RUN pip install --no-cache-dir flask waitress tqdm pysbd blake3 stftpitchshift \
     && pip install --no-cache-dir git+https://github.com/ysharma3501/LavaSR.git \
