@@ -2,7 +2,7 @@ services:
   haproxy:
     image: docker.io/library/haproxy:3.0.11 # previously 3.3-dev
     volumes:
-      - /mnt/f/tgtts-qwen3/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     depends_on:
       - tts1
       - api1
@@ -16,7 +16,7 @@ services:
     networks:
       - default
     volumes:
-      - /mnt/f/tgtts-qwen3/cache:/workspace/cache:rw
+      - ./cache:/workspace/cache:rw
     environment:
       - TORCH_USE_CUDA_DSA=1
       - TORCH_CUDNN_SDPA_ENABLED=1
@@ -34,8 +34,8 @@ services:
     networks:
       - default
     volumes:
-      - /mnt/f/tgtts-qwen3/speaker_latents:/workspace/speaker_latents:rw
-      - /mnt/f/tgtts-qwen3/voice_mapping.json:/workspace/voice_mapping.json:rw
+      - ./speaker_latents:/workspace/speaker_latents:rw
+      - ./voice_mapping.json:/workspace/voice_mapping.json:rw
     environment:
       - TORCH_USE_CUDA_DSA=1
       - TORCH_CUDNN_SDPA_ENABLED=1
@@ -53,9 +53,9 @@ services:
     networks:
       - default
     volumes:
-      - /mnt/f/tgtts-qwen3/speaker_latents:/workspace/speaker_latents:rw
-      - /mnt/f/tgtts-qwen3/voice_mapping.json:/workspace/voice_mapping.json:rw
-      - /mnt/f/tgtts-qwen3/sfx_mapping.json:/workspace/sfx_mapping.json:rw
+      - ./speaker_latents:/workspace/speaker_latents:rw
+      - ./voice_mapping.json:/workspace/voice_mapping.json:rw
+      - ./sfx_mapping.json:/workspace/sfx_mapping.json:rw
     environment:
       - TORCH_USE_CUDA_DSA=1
       - TORCH_CUDNN_SDPA_ENABLED=1
