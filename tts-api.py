@@ -1,21 +1,22 @@
-import os
-import io
 import gc
-import subprocess
-import requests
-import re
-import pysbd
-import pydub
+import io
+import os
 import random
+import re
+import subprocess
 import time
+
+import librosa
 import numpy as np
+import pydub
+import pysbd
+import requests
 import soundfile as sf
 from blake3 import blake3
-from flask import Flask, request, send_file, abort, make_response
+from flask import Flask, abort, make_response, request, send_file
+from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
 from stftpitchshift import StftPitchShift
-import librosa
-from pydub import AudioSegment
 
 trim_leading_silence = lambda x: x[detect_leading_silence(x) :]
 trim_trailing_silence = lambda x: trim_leading_silence(x.reverse()).reverse()
@@ -32,111 +33,121 @@ pitch_shifter = StftPitchShift(1024, 256, 48000)
 
 import threading
 
+
 def audiosegment_to_numpy(seg):
-	samples = np.array(seg.get_array_of_samples())
+    samples = np.array(seg.get_array_of_samples())
 
-	if seg.channels == 2:
-		samples = samples.reshape((-1, 2))
+    if seg.channels == 2:
+        samples = samples.reshape((-1, 2))
 
-	samples = samples.astype(np.float32) / (1 << (8 * seg.sample_width - 1))
+    samples = samples.astype(np.float32) / (1 << (8 * seg.sample_width - 1))
 
-	return samples, seg.frame_rate
+    return samples, seg.frame_rate
+
 
 def numpy_to_audiosegment(samples, sr, sample_width=2, channels=1):
-	samples_int16 = (samples * 32767).astype(np.int16)
+    samples_int16 = (samples * 32767).astype(np.int16)
 
-	return AudioSegment(
-		samples_int16.tobytes(),
-		frame_rate=sr,
-		sample_width=sample_width,
-		channels=channels
-	)
+    return AudioSegment(
+        samples_int16.tobytes(),
+        frame_rate=sr,
+        sample_width=sample_width,
+        channels=channels,
+    )
 
 
 from scipy.signal import butter, lfilter
+
+
 def bandpass(x, sr, low=300, high=3000, order=4):
-	nyq = sr * 0.5
-	b, a = butter(order, [low/nyq, high/nyq], btype='band')
-	return lfilter(b, a, x)
+    nyq = sr * 0.5
+    b, a = butter(order, [low / nyq, high / nyq], btype="band")
+    return lfilter(b, a, x)
+
 
 def compress(x, threshold=0.2, ratio=4):
-	y = x.copy()
-	mask = np.abs(y) > threshold
-	y[mask] = np.sign(y[mask]) * (
-		threshold + (np.abs(y[mask]) - threshold) / ratio
-	)
-	return y
+    y = x.copy()
+    mask = np.abs(y) > threshold
+    y[mask] = np.sign(y[mask]) * (threshold + (np.abs(y[mask]) - threshold) / ratio)
+    return y
+
 
 def saturate(x, drive=2.5):
-	return np.tanh(drive * x)
+    return np.tanh(drive * x)
+
 
 def add_radio_noise(x, level=0.004):
-	noise = np.random.normal(0, level, len(x))
-	return x + noise
+    noise = np.random.normal(0, level, len(x))
+    return x + noise
+
 
 def am_modulate(x, sr, depth=0.08, freq=60):
-	t = np.arange(len(x)) / sr
-	return x * (1 + depth * np.sin(2 * np.pi * freq * t))
+    t = np.arange(len(x)) / sr
+    return x * (1 + depth * np.sin(2 * np.pi * freq * t))
+
 
 def squelch_tail(sr, length=0.15):
-	n = int(sr * length)
-	noise = np.random.normal(0, 0.02, n)
-	fade = np.linspace(1, 0, n)
-	return noise * fade
+    n = int(sr * length)
+    noise = np.random.normal(0, 0.02, n)
+    fade = np.linspace(1, 0, n)
+    return noise * fade
+
 
 def normalize(x, peak=0.8):
-	m = np.max(np.abs(x))
-	if m > 0:
-		x = x / m * peak
-	return x
+    m = np.max(np.abs(x))
+    if m > 0:
+        x = x / m * peak
+    return x
+
 
 def ensure_mono(x):
-	if x.ndim > 1:
-		x = x.mean(axis=1)
-	return x
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    return x
+
 
 def load_and_match(path, target_sr):
-	audio, sr = sf.read(path)
-	audio = ensure_mono(audio)
+    audio, sr = sf.read(path)
+    audio = ensure_mono(audio)
 
-	if sr != target_sr:
-		import librosa
-		audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+    if sr != target_sr:
+        import librosa
 
-	return audio
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+
+    return audio
+
 
 def radio_effect(audio, sr):
-	if audio.ndim > 1:
-		audio = audio.mean(axis=1)
-	click_on = load_and_match("mic_click_on.wav", sr)
-	click_off = load_and_match("mic_click_off.wav", sr)
-	static = load_and_match("diffstatic.wav", sr)
-	speech = librosa.resample(audio, orig_sr=sr, target_sr=8000)
-	speech = librosa.resample(speech, orig_sr=8000, target_sr=48000)
-	speech = normalize(speech, 0.5)
-	speech = bandpass(speech, sr)
-	speech = saturate(speech, 2)
-	speech = normalize(speech, 0.7)
-	static = static[:len(speech)]
-	speech = speech + static * 0.2
-	output = np.concatenate([
-		click_on,
-		speech,
-		static[:int(sr*0.1)],
-		click_off
-	])
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    click_on = load_and_match("mic_click_on.wav", sr)
+    click_off = load_and_match("mic_click_off.wav", sr)
+    static = load_and_match("diffstatic.wav", sr)
+    speech = librosa.resample(audio, orig_sr=sr, target_sr=8000)
+    speech = librosa.resample(speech, orig_sr=8000, target_sr=48000)
+    speech = normalize(speech, 0.5)
+    speech = bandpass(speech, sr)
+    speech = saturate(speech, 2)
+    speech = normalize(speech, 0.7)
+    static = static[: len(speech)]
+    speech = speech + static * 0.2
+    output = np.concatenate([click_on, speech, static[: int(sr * 0.1)], click_off])
 
-	output = normalize(output, 0.9)
+    output = normalize(output, 0.9)
 
-	return output
+    return output
+
 
 tts_jobs = {}
 blips_jobs = {}
+
 
 class TTSJob:
     def __init__(self):
         self.event = threading.Event()
         self.audio = None
+
 
 def now() -> int:
     return time.time_ns() // 1_000_000
@@ -150,7 +161,8 @@ def hhmmss_to_seconds(string):
     new_time += float(separated_times[2])
     return new_time
 
-def audiosegment_to_librosawav(audiosegment):    
+
+def audiosegment_to_librosawav(audiosegment):
     channel_sounds = audiosegment.split_to_mono()
     samples = [s.get_array_of_samples() for s in channel_sounds]
 
@@ -160,8 +172,18 @@ def audiosegment_to_librosawav(audiosegment):
 
     return fp_arr
 
+
 def text_to_speech_handler(
-    endpoint, voice, text, filter_complex, pitch, blip_number, blip_base, special_filters=[], segment=False, identifier=""
+    endpoint,
+    voice,
+    text,
+    filter_complex,
+    pitch,
+    blip_number,
+    blip_base,
+    special_filters=[],
+    segment=False,
+    identifier="",
 ):
     filter_complex = filter_complex.replace('"', "")
     data_bytes = io.BytesIO()
@@ -170,13 +192,29 @@ def text_to_speech_handler(
     if segment:
         for sentence in segmenter.segment(text):
             sentence_audio = pydub.AudioSegment.empty()
-            if endpoint == "http://haproxy:5003/generate-tts": # we dont cache blips for obvious reasons
+            if (
+                endpoint == "http://haproxy:5003/generate-tts"
+            ):  # we dont cache blips for obvious reasons
                 merged_text = voice + sentence
                 hashed_message = blake3(merged_text.encode("utf-8")).hexdigest()
-                if hashed_message in cached_messages and os.path.exists("./cache/" + hashed_message + "/"):
-                    cached_sentences = [f for f in os.listdir("./cache/" + hashed_message + "/") if os.path.isfile(os.path.join("./cache/" + hashed_message + "/", f))]
+                if hashed_message in cached_messages and os.path.exists(
+                    "./cache/" + hashed_message + "/"
+                ):
+                    cached_sentences = [
+                        f
+                        for f in os.listdir("./cache/" + hashed_message + "/")
+                        if os.path.isfile(
+                            os.path.join("./cache/" + hashed_message + "/", f)
+                        )
+                    ]
                     if len(cached_sentences) >= max_to_cache:
-                        sentence_audio = pydub.AudioSegment.from_file(os.path.join("./cache/" + hashed_message + "/", random.choice(cached_sentences)), "wav")
+                        sentence_audio = pydub.AudioSegment.from_file(
+                            os.path.join(
+                                "./cache/" + hashed_message + "/",
+                                random.choice(cached_sentences),
+                            ),
+                            "wav",
+                        )
                     else:
                         response = requests.get(
                             endpoint,
@@ -185,8 +223,17 @@ def text_to_speech_handler(
 
                         if response.status_code != 200:
                             abort(response.status_code)
-                        sentence_audio = pydub.AudioSegment.from_file(io.BytesIO(response.content), "wav")
-                        sentence_audio.export("./cache/" + hashed_message + "/cached_" + str(len(cached_sentences)) + ".wav", format="wav")
+                        sentence_audio = pydub.AudioSegment.from_file(
+                            io.BytesIO(response.content), "wav"
+                        )
+                        sentence_audio.export(
+                            "./cache/"
+                            + hashed_message
+                            + "/cached_"
+                            + str(len(cached_sentences))
+                            + ".wav",
+                            format="wav",
+                        )
                 else:
                     if not os.path.exists("./cache/" + hashed_message + "/"):
                         os.mkdir("./cache/" + hashed_message + "/")
@@ -197,18 +244,29 @@ def text_to_speech_handler(
 
                     if response.status_code != 200:
                         abort(response.status_code)
-                    sentence_audio = pydub.AudioSegment.from_file(io.BytesIO(response.content), "wav")
-                    sentence_audio.export("./cache/" + hashed_message + "/cached_0.wav", format="wav")
+                    sentence_audio = pydub.AudioSegment.from_file(
+                        io.BytesIO(response.content), "wav"
+                    )
+                    sentence_audio.export(
+                        "./cache/" + hashed_message + "/cached_0.wav", format="wav"
+                    )
                     cached_messages.append(hashed_message)
             else:
                 response = requests.get(
                     endpoint,
-                    json={"text": sentence, "voice": voice, "blip_base": blip_base, "blip_number": blip_number},
+                    json={
+                        "text": sentence,
+                        "voice": voice,
+                        "blip_base": blip_base,
+                        "blip_number": blip_number,
+                    },
                 )
 
                 if response.status_code != 200:
                     abort(response.status_code)
-                sentence_audio = pydub.AudioSegment.from_file(io.BytesIO(response.content), "wav")
+                sentence_audio = pydub.AudioSegment.from_file(
+                    io.BytesIO(response.content), "wav"
+                )
             sentence_silence = pydub.AudioSegment.silent(250, tts_sample_rate)
             sentence_audio += sentence_silence
             final_audio += sentence_audio
@@ -216,13 +274,29 @@ def text_to_speech_handler(
             # (https://scholarsarchive.byu.edu/cgi/viewcontent.cgi?article=10153&context=etd)
     else:
         sentence_audio = pydub.AudioSegment.empty()
-        if endpoint == "http://haproxy:5003/generate-tts": # we dont cache blips for obvious reasons
+        if (
+            endpoint == "http://haproxy:5003/generate-tts"
+        ):  # we dont cache blips for obvious reasons
             merged_text = voice + text
             hashed_message = blake3(merged_text.encode("utf-8")).hexdigest()
-            if hashed_message in cached_messages and os.path.exists("./cache/" + hashed_message + "/"):
-                cached_sentences = [f for f in os.listdir("./cache/" + hashed_message + "/") if os.path.isfile(os.path.join("./cache/" + hashed_message + "/", f))]
+            if hashed_message in cached_messages and os.path.exists(
+                "./cache/" + hashed_message + "/"
+            ):
+                cached_sentences = [
+                    f
+                    for f in os.listdir("./cache/" + hashed_message + "/")
+                    if os.path.isfile(
+                        os.path.join("./cache/" + hashed_message + "/", f)
+                    )
+                ]
                 if len(cached_sentences) >= max_to_cache:
-                    sentence_audio = pydub.AudioSegment.from_file(os.path.join("./cache/" + hashed_message + "/", random.choice(cached_sentences)), "wav")
+                    sentence_audio = pydub.AudioSegment.from_file(
+                        os.path.join(
+                            "./cache/" + hashed_message + "/",
+                            random.choice(cached_sentences),
+                        ),
+                        "wav",
+                    )
                 else:
                     response = requests.get(
                         endpoint,
@@ -231,8 +305,17 @@ def text_to_speech_handler(
 
                     if response.status_code != 200:
                         abort(response.status_code)
-                    sentence_audio = pydub.AudioSegment.from_file(io.BytesIO(response.content), "wav")
-                    sentence_audio.export("./cache/" + hashed_message + "/cached_" + str(len(cached_sentences)) + ".wav", format="wav")
+                    sentence_audio = pydub.AudioSegment.from_file(
+                        io.BytesIO(response.content), "wav"
+                    )
+                    sentence_audio.export(
+                        "./cache/"
+                        + hashed_message
+                        + "/cached_"
+                        + str(len(cached_sentences))
+                        + ".wav",
+                        format="wav",
+                    )
             else:
                 if not os.path.exists("./cache/" + hashed_message + "/"):
                     os.mkdir("./cache/" + hashed_message + "/")
@@ -243,18 +326,30 @@ def text_to_speech_handler(
 
                 if response.status_code != 200:
                     abort(response.status_code)
-                sentence_audio = pydub.AudioSegment.from_file(io.BytesIO(response.content), "wav")
-                sentence_audio.export("./cache/" + hashed_message + "/cached_0.wav", format="wav")
+                sentence_audio = pydub.AudioSegment.from_file(
+                    io.BytesIO(response.content), "wav"
+                )
+                sentence_audio.export(
+                    "./cache/" + hashed_message + "/cached_0.wav", format="wav"
+                )
                 cached_messages.append(hashed_message)
         else:
             response = requests.get(
                 endpoint,
-                json={"text": text, "voice": voice, "blip_base": blip_base, "blip_number": blip_number, "pitch": pitch},
+                json={
+                    "text": text,
+                    "voice": voice,
+                    "blip_base": blip_base,
+                    "blip_number": blip_number,
+                    "pitch": pitch,
+                },
             )
 
             if response.status_code != 200:
                 abort(response.status_code)
-            sentence_audio = pydub.AudioSegment.from_file(io.BytesIO(response.content), "wav")
+            sentence_audio = pydub.AudioSegment.from_file(
+                io.BytesIO(response.content), "wav"
+            )
         sentence_silence = pydub.AudioSegment.silent(250, tts_sample_rate)
         sentence_audio += sentence_silence
         final_audio += sentence_audio
@@ -262,9 +357,11 @@ def text_to_speech_handler(
         # (https://scholarsarchive.byu.edu/cgi/viewcontent.cgi?article=10153&context=etd)
     if pitch != 0 and endpoint == "http://haproxy:5003/generate-tts":
         numpy_audio, sr = audiosegment_to_numpy(final_audio)
-        numpy_audio = librosa.effects.pitch_shift(numpy_audio, sr=sr, n_steps=pitch, bins_per_octave=24)
+        numpy_audio = librosa.effects.pitch_shift(
+            numpy_audio, sr=sr, n_steps=pitch, bins_per_octave=24
+        )
         final_audio = numpy_to_audiosegment(numpy_audio, sr)
-    #print(f"Total time to generate audio: {now() - start_time}")
+    # print(f"Total time to generate audio: {now() - start_time}")
     start_time = now()
 
     final_audio.export(data_bytes, format="wav")
@@ -343,8 +440,8 @@ def text_to_speech_handler(
     hh_mm_ss = matched_length.group(1)
     length = hhmmss_to_seconds(hh_mm_ss)
 
-    #print(f"ffmpeg result size: {len(ffmpeg_result.stdout)}")
-    #print(f"ffmpeg time: {now() - start_time}")
+    # print(f"ffmpeg result size: {len(ffmpeg_result.stdout)}")
+    # print(f"ffmpeg time: {now() - start_time}")
 
     start_time = now()
     export_audio = io.BytesIO(ffmpeg_result.stdout)
@@ -357,15 +454,17 @@ def text_to_speech_handler(
         new_data_bytes = io.BytesIO()
         radio_audio.export(new_data_bytes, format="ogg")
         export_audio = io.BytesIO(new_data_bytes.getvalue())
-    audioseg_for_length = pydub.AudioSegment.from_file(io.BytesIO(export_audio.getvalue()), "ogg")
-    #print(f"pydub time: {now() - start_time}")
+    audioseg_for_length = pydub.AudioSegment.from_file(
+        io.BytesIO(export_audio.getvalue()), "ogg"
+    )
+    # print(f"pydub time: {now() - start_time}")
     if endpoint == "http://haproxy:5003/generate-tts":
         tts_jobs[identifier].audio = export_audio.getvalue()
         tts_jobs[identifier].event.set()
     else:
         blips_jobs[identifier].audio = export_audio.getvalue()
         blips_jobs[identifier].event.set()
-    
+
     response = send_file(
         export_audio,
         as_attachment=True,
@@ -404,8 +503,9 @@ def text_to_speech_normal():
         "",
         special_filters,
         False,
-        identifier
+        identifier,
     )
+
 
 @app.route("/tts-blips")
 def text_to_speech_blips():
@@ -437,13 +537,12 @@ def text_to_speech_blips():
         blip_base,
         special_filters,
         True,
-        identifier
+        identifier,
     )
 
+
 def radio_handler(job):
-    base_audio = pydub.AudioSegment.from_file(
-        io.BytesIO(job.audio), "ogg"
-    )
+    base_audio = pydub.AudioSegment.from_file(io.BytesIO(job.audio), "ogg")
     samples, sr = audiosegment_to_numpy(base_audio)
     processed = radio_effect(samples, sr)
     export_audio = numpy_to_audiosegment(processed, sr)
@@ -458,6 +557,7 @@ def radio_handler(job):
     response.headers["audio-length"] = export_audio.duration_seconds
     return response
 
+
 @app.route("/tts-radio")
 def text_to_speech_radio():
     if authorization_token != request.headers.get("Authorization", ""):
@@ -469,16 +569,17 @@ def text_to_speech_radio():
 
     while identifier not in tts_jobs:
         if time.time() - start > timeout:
-            #print("TIMED OUT WAITING FOR JOB")
+            # print("TIMED OUT WAITING FOR JOB")
             abort(408)
         time.sleep(0.05)
 
     job = tts_jobs[identifier]
 
     if not job.event.wait(timeout=10):
-         #print("TIMED OUT WAITING FOR JOB")
-         abort(408)
+        # print("TIMED OUT WAITING FOR JOB")
+        abort(408)
     return radio_handler(tts_jobs[identifier])
+
 
 @app.route("/tts-blips-radio")
 def text_to_speech_blips_radio():
@@ -491,16 +592,17 @@ def text_to_speech_blips_radio():
 
     while identifier not in blips_jobs:
         if time.time() - start > timeout:
-            #print("TIMED OUT WAITING FOR JOB")
+            # print("TIMED OUT WAITING FOR JOB")
             abort(408)
         time.sleep(0.05)
 
     job = blips_jobs[identifier]
 
     if not job.event.wait(timeout=10):
-         #print("TIMED OUT WAITING FOR JOB")
-         abort(408)
+        # print("TIMED OUT WAITING FOR JOB")
+        abort(408)
     return radio_handler(blips_jobs[identifier])
+
 
 @app.route("/tts-voices")
 def voices_list():
@@ -516,6 +618,7 @@ def tts_health_check():
     gc.collect()
     return "OK", 200
 
+
 @app.route("/pitch-available")
 def superpitch_available():
     if authorization_token != request.headers.get("Authorization", ""):
@@ -527,7 +630,9 @@ if __name__ == "__main__":
     from waitress import serve
 
     print("Loading cached messages...")
-    directories = [f for f in os.listdir("./cache/") if os.path.isdir(os.path.join("./cache/", f))]
+    directories = [
+        f for f in os.listdir("./cache/") if os.path.isdir(os.path.join("./cache/", f))
+    ]
     for directory in directories:
         cached_messages.append(directory)
     print("Loaded " + str(len(cached_messages)) + " messages.")
