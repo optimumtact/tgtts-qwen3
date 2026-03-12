@@ -4,6 +4,7 @@ import os
 from typing import *
 
 import torch
+from flask import jsonify
 from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
 from torchaudio._extension.utils import _init_dll_path
@@ -325,9 +326,9 @@ def text_to_speech():
 @app.route("/tts-voices")
 def voices_list():
     if use_voice_name_mapping:
-        data = list(voice_name_mapping.values())
+        data = list(voice_name_mapping.keys())
         data.sort()
-        return json.dumps(data)
+        return jsonify(data)
 
 
 @app.route("/health-check")
