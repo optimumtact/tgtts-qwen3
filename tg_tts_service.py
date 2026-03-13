@@ -323,12 +323,15 @@ def text_to_speech():
                 gen_end = time.time()
 
                 duration = gen_end - gen_start
-                logger.info(f"Voice generation time: {duration:.4f}s")
+                final_duration = len(normalizedsound) / 1000
+                logger.info(
+                    f"Voice generation time: {duration:.4f}s | Final Duration {final_duration:.4f}"
+                )
 
                 # Debug trigger for slow generation
                 if duration > 4.0:
                     logger.warning(
-                        f"Slow generation detected. Duration: {duration:.4f}s | Voice: {voice} | Text: {text}"
+                        f"Slow generation detected. Duration: {duration:.4f}s | Voice: {voice} | Text: {text} | Final Duration: {final_duration:.4f}s"
                     )
 
                 sf.write(data_bytes, audio_list[0], sr, format="wav")
