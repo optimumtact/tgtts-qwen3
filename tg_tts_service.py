@@ -1,7 +1,7 @@
 import io
 import json
-import os
 import logging
+import os
 import time
 from typing import *
 
@@ -11,7 +11,9 @@ from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger("tts.service")
 
 from torchaudio._extension.utils import _init_dll_path
@@ -35,6 +37,7 @@ from faster_qwen3_tts import FasterQwen3TTS
 from flask import Flask, request, send_file
 from pydub import AudioSegment, effects
 from tqdm import tqdm
+
 
 class Qwen3_TTS_TG(FasterQwen3TTS):
 
@@ -292,11 +295,15 @@ def text_to_speech():
                     actual_text_found = True
                     break
             if not actual_text_found:
-                logger.debug("No alphanumeric characters found in text, returning stub file.")
+                logger.debug(
+                    "No alphanumeric characters found in text, returning stub file."
+                )
                 stub_file = AudioSegment.empty()
                 stub_file.set_frame_rate(48000)
                 stub_file.export(data_bytes, format="wav")
-                result = send_file(io.BytesIO(data_bytes.getvalue()), mimetype="audio/wav")
+                result = send_file(
+                    io.BytesIO(data_bytes.getvalue()), mimetype="audio/wav"
+                )
                 return result
             with torch.inference_mode():
                 final_letter = text[-1]
@@ -307,24 +314,39 @@ def text_to_speech():
                     text and text[0].isalpha() and not text[0].isupper()
                 ):  # capitalize that shit if they forgot
                     text = text[0].upper() + text[1:]
-                
+
                 # Inference
                 gen_start = time.time()
-                audio_list, sr = model.generate_voice_clone_tg(text=text, ref_speaker=voice)
+                audio_list, sr = model.generate_voice_clone_tg(
+                    text=text, ref_speaker=voice
+                )
                 gen_end = time.time()
-                logger.info(f"Voice generation time: {gen_end - gen_start:.4f}s")
+
+                duration = gen_end - gen_start
+                logger.info(f"Voice generation time: {duration:.4f}s")
+
+                # Debug trigger for slow generation
+                if duration > 4.0:
+                    logger.warning(
+                        f"Slow generation detected. Duration: {duration:.4f}s | Voice: {voice} | Text: {text}"
+                    )
 
                 sf.write(data_bytes, audio_list[0], sr, format="wav")
-                
+
                 enhance_start = time.time()
                 input_audio, _ = lava_model.load_audio(
                     io.BytesIO(data_bytes.getvalue()), input_sr=24000
                 )
                 output_audio = (
-                    lava_model.enhance(input_audio, denoise=False).cpu().numpy().squeeze()
+                    lava_model.enhance(input_audio, denoise=False)
+                    .cpu()
+                    .numpy()
+                    .squeeze()
                 )
                 enhance_end = time.time()
-                logger.info(f"LavaSR enhancement time: {enhance_end - enhance_start:.4f}s")
+                logger.info(
+                    f"LavaSR enhancement time: {enhance_end - enhance_start:.4f}s"
+                )
 
                 temp_databytes = io.BytesIO()
                 sf.write(temp_databytes, output_audio, 48000, format="wav")
@@ -338,7 +360,7 @@ def text_to_speech():
                 result = send_file(
                     io.BytesIO(temp_databytes.getvalue()), mimetype="audio/wav"
                 )
-        
+
         logger.info(f"Total processing time: {time.time() - request_start_time:.4f}s")
         return result
 
@@ -358,11 +380,26 @@ def tts_health_check():
 
 @app.route("/toggle-logging")
 def toggle_logging():
-    current_level = logger.getEffectiveLevel()
-    new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
-    logger.setLevel(new_level)
-    # Also update the base logger if needed, but updating 'logger' is usually enough for this file
-    level_name = logging.getLevelName(new_level)
+    level_str = request.args.get("level", "").upper()
+    if level_str:
+        try:
+            logger.setLevel(level_str)
+        except (ValueError, TypeError):
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Invalid logging level: {level_str}",
+                    }
+                ),
+                400,
+            )
+    else:
+        current_level = logger.getEffectiveLevel()
+        new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
+        logger.setLevel(new_level)
+
+    level_name = logging.getLevelName(logger.getEffectiveLevel())
     return jsonify({"status": "success", "new_level": level_name})
 
 

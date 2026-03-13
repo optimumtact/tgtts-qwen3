@@ -272,10 +272,18 @@ def tts_health_check():
 
 @app.route("/toggle-logging")
 def toggle_logging():
-	current_level = logger.getEffectiveLevel()
-	new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
-	logger.setLevel(new_level)
-	level_name = logging.getLevelName(new_level)
+	level_str = request.args.get("level", "").upper()
+	if level_str:
+		try:
+			logger.setLevel(level_str)
+		except (ValueError, TypeError):
+			return json.dumps({"status": "error", "message": f"Invalid logging level: {level_str}"}), 400
+	else:
+		current_level = logger.getEffectiveLevel()
+		new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
+		logger.setLevel(new_level)
+	
+	level_name = logging.getLevelName(logger.getEffectiveLevel())
 	return json.dumps({"status": "success", "new_level": level_name})
 
 if __name__ == "__main__":
