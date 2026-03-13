@@ -1,12 +1,19 @@
 import io
 import json
 import os
+import logging
+import time
 from typing import *
 
 import torch
 from flask import jsonify
 from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("tts.service")
+
 from torchaudio._extension.utils import _init_dll_path
 
 _init_dll_path()  # I LOVE PYTORCH I LOVE PYTORCH I LOVE PYTORCH FUCKING TORCHAUDIO SUCKS ASS
@@ -274,7 +281,8 @@ def cap_loudness(seg, max_dbfs=-1.0):
 def text_to_speech():
     text = request.json.get("text", "")
     voice = request.json.get("voice", "")
-    # print(voice + " says, " + "\"" + text + "\"")
+    request_start_time = time.time()
+    logger.debug(f"Endpoint: /generate-tts | Voice: {voice} | Text: {text[:50]}...")
     result = None
     actual_text_found = False
     with tts_lock:
@@ -284,6 +292,7 @@ def text_to_speech():
                     actual_text_found = True
                     break
             if not actual_text_found:
+                logger.debug("No alphanumeric characters found in text, returning stub file.")
                 stub_file = AudioSegment.empty()
                 stub_file.set_frame_rate(48000)
                 stub_file.export(data_bytes, format="wav")
@@ -293,21 +302,30 @@ def text_to_speech():
                 final_letter = text[-1]
                 acceptable_punctuation = [".", "?", "!"]
                 if not final_letter in acceptable_punctuation:
-                    # print("Forgot punctuation, adding . ")
                     text += ". "
                 if (
                     text and text[0].isalpha() and not text[0].isupper()
                 ):  # capitalize that shit if they forgot
                     text = text[0].upper() + text[1:]
+                
                 # Inference
+                gen_start = time.time()
                 audio_list, sr = model.generate_voice_clone_tg(text=text, ref_speaker=voice)
+                gen_end = time.time()
+                logger.info(f"Voice generation time: {gen_end - gen_start:.4f}s")
+
                 sf.write(data_bytes, audio_list[0], sr, format="wav")
+                
+                enhance_start = time.time()
                 input_audio, _ = lava_model.load_audio(
                     io.BytesIO(data_bytes.getvalue()), input_sr=24000
                 )
                 output_audio = (
                     lava_model.enhance(input_audio, denoise=False).cpu().numpy().squeeze()
                 )
+                enhance_end = time.time()
+                logger.info(f"LavaSR enhancement time: {enhance_end - enhance_start:.4f}s")
+
                 temp_databytes = io.BytesIO()
                 sf.write(temp_databytes, output_audio, 48000, format="wav")
                 rawsound = AudioSegment.from_file(
@@ -320,6 +338,8 @@ def text_to_speech():
                 result = send_file(
                     io.BytesIO(temp_databytes.getvalue()), mimetype="audio/wav"
                 )
+        
+        logger.info(f"Total processing time: {time.time() - request_start_time:.4f}s")
         return result
 
 
@@ -334,6 +354,16 @@ def voices_list():
 @app.route("/health-check")
 def tts_health_check():
     return f"OK: 1", 200
+
+
+@app.route("/toggle-logging")
+def toggle_logging():
+    current_level = logger.getEffectiveLevel()
+    new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
+    logger.setLevel(new_level)
+    # Also update the base logger if needed, but updating 'logger' is usually enough for this file
+    level_name = logging.getLevelName(new_level)
+    return jsonify({"status": "success", "new_level": level_name})
 
 
 if __name__ == "__main__":

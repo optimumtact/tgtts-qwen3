@@ -61,7 +61,33 @@ tts1-1  | Serving TTS on :5003
 
 And it's only properly up and running once Serving TTS on :5003 is seen.
 
-to test once it's up
+## Control Script
+
+A convenience script `control.py` is provided to interact with the API from the command line. It requires the `requests` library (`pip install requests`).
+
+### Setup
+The script uses the `TTS_AUTHORIZATION_TOKEN` environment variable for authentication. It defaults to `vote_goof_2024` if not set.
+
+### Commands
+
+#### 1. Generate Audio
+Interactively select a voice and generate an `.ogg` file.
+```bash
+python control.py generate
+```
+*   **Options:**
+    *   `--pitch <int>`: Shift the pitch (default: 0).
+    *   `--filters "filter1|filter2"`: Apply special filters (e.g., `silicon`).
+    *   `--radio`: Automatically generates the base audio and then fetches the radio-processed version. Saves both as `output_<id>.ogg` and `output_radio_<id>.ogg`.
+
+#### 2. Toggle Logging
+Switch the logging level of the API and all backend services between `INFO` and `DEBUG` at runtime.
+```bash
+python control.py toggle-logging
+```
+
+### Manual Testing
+To test manually via curl:
 ```bash
 curl -X GET "http://localhost:5002/tts?identifier=job9001&voice=Example%20Woman&pitch=0" \
      -H "Authorization: vote_goof_2024" \

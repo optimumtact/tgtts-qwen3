@@ -2,9 +2,16 @@ import torch
 import os
 import io
 import json
+import logging
+import time
 from typing import *
 from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("tts.blips")
+
 from torchaudio._extension.utils import _init_dll_path
 _init_dll_path() # I LOVE PYTORCH I LOVE PYTORCH I LOVE PYTORCH FUCKING TORCHAUDIO SUCKS ASS
 import io
@@ -91,6 +98,8 @@ def text_to_speech_blips():
 	blip_base = request.json.get("blip_base", "")
 	blip_number = request.json.get("blip_number", "")
 	pitch = request.json.get("pitch", "")
+	request_start_time = time.time()
+	logger.debug(f"Endpoint: /generate-tts-blips | Voice: {voice} | Base: {blip_base} | Number: {blip_number} | Pitch: {pitch} | Text: {text[:50]}...")
 	if pitch == "":
 		pitch = "0"
 	#print(voice + " blips, " + "\"" + text + "\"")
@@ -105,6 +114,7 @@ def text_to_speech_blips():
 				actual_text_found = True
 				break
 		if not actual_text_found:
+			logger.debug("No alphanumeric characters found in text, returning stub file.")
 			stub_file = AudioSegment.empty()
 			stub_file.set_frame_rate(48000)
 			stub_file.export(data_bytes, format = "wav")
@@ -113,7 +123,12 @@ def text_to_speech_blips():
 		with torch.no_grad():
 			result_sound = AudioSegment.empty()
 			if not voice in blips_cache:
+				logger.debug(f"Cache miss for blip voice: {voice}. Loading from disk.")
 				blips_cache[voice] = torch.load("./speaker_latents/" + voice + ".blips", weights_only=False)
+			else:
+				logger.debug(f"Cache hit for blip voice: {voice}")
+			
+			gen_start = time.time()
 			for i, letter in enumerate(text):
 				if not letter.isalpha() and not letter.isnumeric():
 					if letter in skip_these:
@@ -230,6 +245,8 @@ def text_to_speech_blips():
 						result_sound = result_sound.append(new_audio.fade_in(3).fade_out(8), crossfade = 150)
 					else:
 						result_sound = new_audio.fade_in(3).fade_out(8)
+			
+			logger.info(f"Blip synthesis loop took: {time.time() - gen_start:.4f}s")
 			result_sound.export(data_bytes, format = "wav")
 			rawsound = AudioSegment.from_file(io.BytesIO(data_bytes.getvalue()), "wav")  
 			normalizedsound = normalize_to_target(rawsound, -25)
@@ -238,6 +255,8 @@ def text_to_speech_blips():
 			normalizedsound.export(data_bytes, format="wav")
 		
 		result = send_file(io.BytesIO(data_bytes.getvalue()), mimetype="audio/wav")
+	
+	logger.info(f"Total processing time: {time.time() - request_start_time:.4f}s")
 	return result
 
 @app.route("/tts-voices")
@@ -250,6 +269,14 @@ def voices_list():
 @app.route("/health-check")
 def tts_health_check():
 	return f"OK: 1", 200
+
+@app.route("/toggle-logging")
+def toggle_logging():
+	current_level = logger.getEffectiveLevel()
+	new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
+	logger.setLevel(new_level)
+	level_name = logging.getLevelName(new_level)
+	return json.dumps({"status": "success", "new_level": level_name})
 
 if __name__ == "__main__":
 	from waitress import serve
