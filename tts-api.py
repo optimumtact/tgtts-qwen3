@@ -38,6 +38,23 @@ pitch_shifter = StftPitchShift(1024, 256, 48000)
 
 import threading
 
+# Lock-free stats tracking
+# stats[path] = {"inflight": int, "history": [timestamps]}
+stats = {
+    "/tts": {"inflight": 0, "history": []},
+    "/tts-blips": {"inflight": 0, "history": []},
+    "/tts-radio": {"inflight": 0, "history": []},
+    "/tts-blips-radio": {"inflight": 0, "history": []},
+    "/tts-voices": {"inflight": 0, "history": []},
+}
+
+def record_request(endpoint):
+    stats[endpoint]["inflight"] += 1
+    stats[endpoint]["history"].append(time.time())
+
+def complete_request(endpoint):
+    stats[endpoint]["inflight"] -= 1
+
 
 def audiosegment_to_numpy(seg):
     samples = np.array(seg.get_array_of_samples())
@@ -513,66 +530,80 @@ def text_to_speech_handler(
 def text_to_speech_normal():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
-    identifier = request.args.get("identifier", "")
-    tts_jobs[identifier] = TTSJob()
-    voice = request.args.get("voice", "")
-    text = request.json.get("text", "")
-    pitch = request.args.get("pitch", "")
-    special_filters = request.args.get("special_filters", "")
-    if pitch == "":
-        pitch = "0"
-    silicon = request.args.get("silicon", "")
-    if silicon:
-        special_filters = ["silicon"]
+    
+    endpoint = "/tts"
+    record_request(endpoint)
+    
+    try:
+        identifier = request.args.get("identifier", "")
+        tts_jobs[identifier] = TTSJob()
+        voice = request.args.get("voice", "")
+        text = request.json.get("text", "")
+        pitch = request.args.get("pitch", "")
+        special_filters = request.args.get("special_filters", "")
+        if pitch == "":
+            pitch = "0"
+        silicon = request.args.get("silicon", "")
+        if silicon:
+            special_filters = ["silicon"]
 
-    filter_complex = request.args.get("filter", "")
-    return text_to_speech_handler(
-        "http://haproxy:5003/generate-tts",
-        voice,
-        text,
-        filter_complex,
-        int(pitch),
-        "",
-        "",
-        special_filters,
-        False,
-        identifier,
-    )
+        filter_complex = request.args.get("filter", "")
+        return text_to_speech_handler(
+            "http://haproxy:5003/generate-tts",
+            voice,
+            text,
+            filter_complex,
+            int(pitch),
+            "",
+            "",
+            special_filters,
+            False,
+            identifier,
+        )
+    finally:
+        complete_request(endpoint)
 
 
 @app.route("/tts-blips")
 def text_to_speech_blips():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
-    identifier = request.args.get("identifier", "")
-    logger.debug(f"Endpoint: /tts-blips | ID: {identifier}")
-    blips_jobs[identifier] = TTSJob()
-    voice = request.args.get("voice", "")
-    text = request.json.get("text", "")
-    pitch = request.args.get("pitch", "")
-    special_filters = request.args.get("special_filters", "")
-    if pitch == "":
-        pitch = "0"
-    special_filters = special_filters.split("|")
-    filter_complex = request.args.get("filter", "")
-    blip_base = request.args.get("blip_base", "")
-    if blip_base == "":
-        blip_base = "male"
-    blip_number = request.args.get("blip_number", "")
-    if blip_number == "":
-        blip_number = "1"
-    return text_to_speech_handler(
-        "http://haproxy:5004/generate-tts-blips",
-        voice,
-        text,
-        filter_complex,
-        int(pitch),
-        blip_number,
-        blip_base,
-        special_filters,
-        True,
-        identifier,
-    )
+    
+    endpoint = "/tts-blips"
+    record_request(endpoint)
+    
+    try:
+        identifier = request.args.get("identifier", "")
+        logger.debug(f"Endpoint: /tts-blips | ID: {identifier}")
+        blips_jobs[identifier] = TTSJob()
+        voice = request.args.get("voice", "")
+        text = request.json.get("text", "")
+        pitch = request.args.get("pitch", "")
+        special_filters = request.args.get("special_filters", "")
+        if pitch == "":
+            pitch = "0"
+        special_filters = special_filters.split("|")
+        filter_complex = request.args.get("filter", "")
+        blip_base = request.args.get("blip_base", "")
+        if blip_base == "":
+            blip_base = "male"
+        blip_number = request.args.get("blip_number", "")
+        if blip_number == "":
+            blip_number = "1"
+        return text_to_speech_handler(
+            "http://haproxy:5004/generate-tts-blips",
+            voice,
+            text,
+            filter_complex,
+            int(pitch),
+            blip_number,
+            blip_base,
+            special_filters,
+            True,
+            identifier,
+        )
+    finally:
+        complete_request(endpoint)
 
 
 def radio_handler(job):
@@ -599,61 +630,120 @@ def radio_handler(job):
 def text_to_speech_radio():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
-    identifier = request.args.get("identifier", "")
-    logger.debug(f"Endpoint: /tts-radio | ID: {identifier}")
-
-    timeout = 10
-    start = time.time()
-
-    while identifier not in tts_jobs:
-        if time.time() - start > timeout:
-            logger.error(f"Timeout waiting for TTS job {identifier}")
-            abort(408)
-        time.sleep(0.05)
-
-    job = tts_jobs[identifier]
-
-    if not job.event.wait(timeout=10):
-        logger.error(f"Timeout waiting for TTS job {identifier} event")
-        abort(408)
     
-    logger.info(f"TTS radio job {identifier} ready for processing after {time.time() - start:.4f}s")
-    return radio_handler(tts_jobs[identifier])
+    endpoint = "/tts-radio"
+    record_request(endpoint)
+    
+    try:
+        identifier = request.args.get("identifier", "")
+        logger.debug(f"Endpoint: /tts-radio | ID: {identifier}")
+
+        timeout = 10
+        start = time.time()
+
+        while identifier not in tts_jobs:
+            if time.time() - start > timeout:
+                logger.error(f"Timeout waiting for TTS job {identifier}")
+                abort(408)
+            time.sleep(0.05)
+
+        job = tts_jobs[identifier]
+
+        if not job.event.wait(timeout=10):
+            logger.error(f"Timeout waiting for TTS job {identifier} event")
+            abort(408)
+        
+        logger.info(f"TTS radio job {identifier} ready for processing after {time.time() - start:.4f}s")
+        return radio_handler(tts_jobs[identifier])
+    finally:
+        complete_request(endpoint)
 
 
 @app.route("/tts-blips-radio")
 def text_to_speech_blips_radio():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
-    identifier = request.args.get("identifier", "")
-    logger.debug(f"Endpoint: /tts-blips-radio | ID: {identifier}")
-
-    timeout = 10
-    start = time.time()
-
-    while identifier not in blips_jobs:
-        if time.time() - start > timeout:
-            logger.error(f"Timeout waiting for blips job {identifier}")
-            abort(408)
-        time.sleep(0.05)
-
-    job = blips_jobs[identifier]
-
-    if not job.event.wait(timeout=10):
-        logger.error(f"Timeout waiting for blips job {identifier} event")
-        abort(408)
     
-    logger.info(f"Blips radio job {identifier} ready for processing after {time.time() - start:.4f}s")
-    return radio_handler(blips_jobs[identifier])
+    endpoint = "/tts-blips-radio"
+    record_request(endpoint)
+    
+    try:
+        identifier = request.args.get("identifier", "")
+        logger.debug(f"Endpoint: /tts-blips-radio | ID: {identifier}")
+
+        timeout = 10
+        start = time.time()
+
+        while identifier not in blips_jobs:
+            if time.time() - start > timeout:
+                logger.error(f"Timeout waiting for blips job {identifier}")
+                abort(408)
+            time.sleep(0.05)
+
+        job = blips_jobs[identifier]
+
+        if not job.event.wait(timeout=10):
+            logger.error(f"Timeout waiting for blips job {identifier} event")
+            abort(408)
+        
+        logger.info(f"Blips radio job {identifier} ready for processing after {time.time() - start:.4f}s")
+        return radio_handler(blips_jobs[identifier])
+    finally:
+        complete_request(endpoint)
 
 
 @app.route("/tts-voices")
 def voices_list():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
+    
+    endpoint = "/tts-voices"
+    record_request(endpoint)
+    
+    try:
+        response = requests.get(f"http://haproxy:5003/tts-voices")
+        return response.content
+    finally:
+        complete_request(endpoint)
 
-    response = requests.get(f"http://haproxy:5003/tts-voices")
-    return response.content
+
+@app.route("/statistics")
+def statistics():
+    now = time.time()
+    rows = ""
+    for path, data in stats.items():
+        # Prune history older than 5 minutes (300s)
+        # Replacing the list is atomic in CPython
+        data["history"] = [t for t in data["history"] if t > now - 300]
+        
+        count_30s = len([t for t in data["history"] if t > now - 30])
+        count_5m = len(data["history"])
+        inflight = data["inflight"]
+        
+        rows += f"<tr><td>{path}</td><td>{inflight}</td><td>{count_30s}</td><td>{count_5m}</td></tr>"
+    
+    html = f"""
+    <html>
+    <head>
+        <meta http-equiv="refresh" content="1">
+        <style>
+            table {{ border-collapse: collapse; width: 60%; font-family: sans-serif; }}
+            th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
+            th {{ background-color: #f2f2f2; }}
+            tr:nth-child(even) {{ background-color: #f9f9f9; }}
+            h2 {{ font-family: sans-serif; }}
+        </style>
+    </head>
+    <body>
+        <h2>TTS API Statistics</h2>
+        <table>
+            <tr><th>Endpoint</th><th>In-flight (Current)</th><th>Requests (Last 30s)</th><th>Total (Last 5m)</th></tr>
+            {rows}
+        </table>
+    </body>
+    </html>
+    """
+    return html
 
 
 @app.route("/health-check")
