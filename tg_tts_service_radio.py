@@ -1,14 +1,17 @@
 import gc
 import io
+import json
+import logging
 import os
 import random
 import re
 import subprocess
 import time
-import logging
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger("tts.api")
 
 import librosa
@@ -17,13 +20,16 @@ import pydub
 import pysbd
 import requests
 import soundfile as sf
+import torch
 from blake3 import blake3
-from flask import Flask, abort, make_response, request, send_file, jsonify
+from flask import Flask, abort, jsonify, make_response, request, send_file
 from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
 from stftpitchshift import StftPitchShift
-import torch
+
 app = Flask(__name__)
+
+
 def audiosegment_to_numpy(seg):
     samples = np.array(seg.get_array_of_samples())
 
@@ -144,21 +150,55 @@ def radio_handler():
             logger.debug(f"ID: {identifier} | Timed out waiting for the input file!")
             abort(408)
         time.sleep(0.05)
-    base_audio = pydub.AudioSegment.from_file(io.BytesIO(torch.load("./cache/" + folder + "/" + identifier + ".radio", weights_only=False)), format="ogg")
+    base_audio = pydub.AudioSegment.from_file(
+        io.BytesIO(
+            torch.load(
+                "./cache/" + folder + "/" + identifier + ".radio", weights_only=False
+            )
+        ),
+        format="ogg",
+    )
     samples, sr = audiosegment_to_numpy(base_audio)
     processed = radio_effect(samples, sr)
     export_audio = numpy_to_audiosegment(processed, sr)
     output_bytes = io.BytesIO()
     export_audio.export(output_bytes, format="ogg")
-    result = send_file(
-        io.BytesIO(output_bytes.getvalue()), mimetype="audio/ogg"
-    )
+    result = send_file(io.BytesIO(output_bytes.getvalue()), mimetype="audio/ogg")
     result.headers["audio-length"] = export_audio.duration_seconds
-    logger.info(f"ID: {identifier} | Radio effect generation time: {time.time() - start_time:.4f}s")
+    logger.info(
+        f"ID: {identifier} | Radio effect generation time: {time.time() - start_time:.4f}s"
+    )
     return result
+
+
+@app.route("/toggle-logging")
+def toggle_logging():
+    level_str = request.args.get("level", "").upper()
+    if level_str:
+        try:
+            logger.setLevel(level_str)
+        except (ValueError, TypeError):
+            return (
+                json.dumps(
+                    {
+                        "status": "error",
+                        "message": f"Invalid logging level: {level_str}",
+                    }
+                ),
+                400,
+            )
+    else:
+        current_level = logger.getEffectiveLevel()
+        new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
+        logger.setLevel(new_level)
+
+    level_name = logging.getLevelName(logger.getEffectiveLevel())
+    return json.dumps({"status": "success", "new_level": level_name})
+
 
 if __name__ == "__main__":
     from waitress import serve
+
     print("Warming up...")
     noise = radio_effect(np.random.randn(int(48000 * 1)), 48000)
     del noise

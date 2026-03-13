@@ -288,6 +288,10 @@ def text_to_speech():
     logger.debug(f"Endpoint: /generate-tts | Voice: {voice} | Text: {text[:50]}...")
     result = None
     actual_text_found = False
+    audio_duration = 0
+    tts_duration = 0
+    lava_duration = 0
+    normalize_duration = 0
     with tts_lock:
         with io.BytesIO() as data_bytes:
             for i, letter in enumerate(text):
@@ -322,17 +326,7 @@ def text_to_speech():
                 )
                 gen_end = time.time()
 
-                duration = gen_end - gen_start
-                final_duration = len(normalizedsound) / 1000
-                logger.info(
-                    f"Voice generation time: {duration:.4f}s | Final Duration {final_duration:.4f}"
-                )
-
-                # Debug trigger for slow generation
-                if duration > 4.0:
-                    logger.warning(
-                        f"Slow generation detected. Duration: {duration:.4f}s | Voice: {voice} | Text: {text} | Final Duration: {final_duration:.4f}s"
-                    )
+                tts_duration = gen_end - gen_start
 
                 sf.write(data_bytes, audio_list[0], sr, format="wav")
 
@@ -347,10 +341,9 @@ def text_to_speech():
                     .squeeze()
                 )
                 enhance_end = time.time()
-                logger.info(
-                    f"LavaSR enhancement time: {enhance_end - enhance_start:.4f}s"
-                )
+                lava_duration = enhance_end - enhance_start
 
+                normalise_start = time.time()
                 temp_databytes = io.BytesIO()
                 sf.write(temp_databytes, output_audio, 48000, format="wav")
                 rawsound = AudioSegment.from_file(
@@ -360,12 +353,23 @@ def text_to_speech():
                 normalizedsound = cap_loudness(normalizedsound, max_dbfs=-5)
                 normalizedsound = effects.normalize(rawsound)
                 normalizedsound.export(temp_databytes, format="wav")
+                normalised_end = time.time()
+                normalize_duration = normalised_end - normalise_start
                 result = send_file(
                     io.BytesIO(temp_databytes.getvalue()), mimetype="audio/wav"
                 )
+                audio_duration = len(normalizedsound) / 1000
 
-        logger.info(f"Total processing time: {time.time() - request_start_time:.4f}s")
-        return result
+        totaltime = time.time() - request_start_time
+        if totaltime > 4.0:
+            logger.warning(
+                f"Slow request detected. Total time: {totaltime:.4f}s | Voice: {voice} | Text: {text} | Audio Duration: {audio_duration:.2f}s | TTS Time: {tts_duration:.4f}s | LavaSR Time: {lava_duration:.4f}s | Normalization Time: {normalize_duration:.4f}s"
+            )
+
+        else:
+            logger.info(
+                f"Request complete Total time: {totaltime:.4f}s | Voice: {voice} | Text: {text} | Audio Duration: {audio_duration:.2f}s | TTS Time: {tts_duration:.4f}s | LavaSR Time: {lava_duration:.4f}s | Normalization Time: {normalize_duration:.4f}s"
+            )
 
 
 @app.route("/tts-voices")

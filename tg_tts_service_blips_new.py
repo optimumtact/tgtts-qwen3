@@ -296,7 +296,9 @@ def text_to_speech_blips():
 
         result = send_file(io.BytesIO(data_bytes.getvalue()), mimetype="audio/wav")
 
-    logger.info(f"Total processing time: {time.time() - request_start_time:.4f}s")
+    logger.info(
+        f"Total processing time for blips: {time.time() - request_start_time:.4f}s"
+    )
     return result
 
 
