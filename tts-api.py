@@ -361,9 +361,6 @@ def text_to_speech_handler(
             numpy_audio, sr=sr, n_steps=pitch, bins_per_octave=24
         )
         final_audio = numpy_to_audiosegment(numpy_audio, sr)
-    # print(f"Total time to generate audio: {now() - start_time}")
-    start_time = now()
-
     final_audio.export(data_bytes, format="wav")
     filter_complex = filter_complex.replace("%SAMPLE_RATE%", str(tts_sample_rate))
     ffmpeg_result = None
@@ -442,8 +439,6 @@ def text_to_speech_handler(
 
     # print(f"ffmpeg result size: {len(ffmpeg_result.stdout)}")
     # print(f"ffmpeg time: {now() - start_time}")
-
-    start_time = now()
     export_audio = io.BytesIO(ffmpeg_result.stdout)
     if "radio" in special_filters:
         radio_audio = pydub.AudioSegment.from_file(random.choice(radio_starts), "wav")
@@ -473,6 +468,7 @@ def text_to_speech_handler(
     )
     response.headers["audio-length"] = audioseg_for_length.duration_seconds
     del audioseg_for_length
+    print(f"Total time to generate audio: {now() - start_time}")
     return response
 
 
