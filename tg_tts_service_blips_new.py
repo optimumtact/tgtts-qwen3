@@ -270,6 +270,14 @@ def voices_list():
 def tts_health_check():
 	return f"OK: 1", 200
 
+@app.route("/toggle-logging")
+def toggle_logging():
+	current_level = logger.getEffectiveLevel()
+	new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
+	logger.setLevel(new_level)
+	level_name = logging.getLevelName(new_level)
+	return json.dumps({"status": "success", "new_level": level_name})
+
 if __name__ == "__main__":
 	from waitress import serve
 	print("Beginning voice caching")

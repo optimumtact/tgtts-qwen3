@@ -18,7 +18,7 @@ import pysbd
 import requests
 import soundfile as sf
 from blake3 import blake3
-from flask import Flask, abort, make_response, request, send_file
+from flask import Flask, abort, make_response, request, send_file, jsonify
 from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
 from stftpitchshift import StftPitchShift
@@ -653,6 +653,34 @@ def voices_list():
 def tts_health_check():
     gc.collect()
     return "OK", 200
+
+
+@app.route("/toggle-logging")
+def toggle_logging():
+    if authorization_token != request.headers.get("Authorization", ""):
+        abort(401)
+    
+    current_level = logger.getEffectiveLevel()
+    new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
+    logger.setLevel(new_level)
+    level_name = logging.getLevelName(new_level)
+    
+    results = {"api": level_name}
+    
+    # Try toggling backend services
+    try:
+        r = requests.get("http://haproxy:5003/toggle-logging", timeout=2)
+        results["tts_service"] = r.json().get("new_level")
+    except Exception as e:
+        results["tts_service"] = f"Error: {str(e)}"
+        
+    try:
+        r = requests.get("http://haproxy:5004/toggle-logging", timeout=2)
+        results["blips_service"] = r.json().get("new_level")
+    except Exception as e:
+        results["blips_service"] = f"Error: {str(e)}"
+        
+    return make_response(jsonify(results), 200)
 
 
 @app.route("/pitch-available")
