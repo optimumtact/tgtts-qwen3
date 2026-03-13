@@ -69,3 +69,22 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+  radio:
+    build: .
+    command: python -u tg_tts_service_radio.py
+    networks:
+      - default
+    volumes:
+      - ./cache:/workspace/cache:rw
+    environment:
+      # only enable this if you're having gpu errors you need to debug.
+      #- TORCH_USE_CUDA_DSA=1
+      - TORCH_CUDNN_SDPA_ENABLED=1
+      - TORCH_LOG=perf_hints
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

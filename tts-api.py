@@ -7,6 +7,8 @@ import subprocess
 import time
 import logging
 
+import torch
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("tts.api")
@@ -492,11 +494,9 @@ def text_to_speech_handler(
     )
     
     if endpoint == "http://haproxy:5003/generate-tts":
-        tts_jobs[identifier].audio = export_audio.getvalue()
-        tts_jobs[identifier].event.set()
+        torch.save(export_audio.getvalue(), "./cache/radio/" + identifier + ".radio")
     else:
-        blips_jobs[identifier].audio = export_audio.getvalue()
-        blips_jobs[identifier].event.set()
+        torch.save(export_audio.getvalue(), "./cache/radio_blips/" + identifier + ".radio")
 
     response = send_file(
         export_audio,
@@ -574,48 +574,37 @@ def text_to_speech_blips():
         identifier,
     )
 
-
-def radio_handler(job):
-    start_time = time.time()
-    logger.debug(f"ID: {job.identifier} | Applying radio effect to generated audio...")
-    base_audio = pydub.AudioSegment.from_file(io.BytesIO(job.audio), "ogg")
-    samples, sr = audiosegment_to_numpy(base_audio)
-    processed = radio_effect(samples, sr)
-    export_audio = numpy_to_audiosegment(processed, sr)
-    output_bytes = io.BytesIO()
-    export_audio.export(output_bytes, format="ogg")
-    response = send_file(
-        io.BytesIO(output_bytes.getvalue()),
-        as_attachment=True,
-        download_name="identifier.ogg",
-        mimetype="audio/ogg",
-    )
-    response.headers["audio-length"] = export_audio.duration_seconds
-    logger.info(f"ID: {job.identifier} | Radio effect generation time: {time.time() - start_time:.4f}s")
-    return response
-
-
 @app.route("/tts-radio")
 def text_to_speech_radio():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
     identifier = request.args.get("identifier", "")
 
-    timeout = 10
-    start = time.time()
+    req_start = time.time()
+    response = requests.get(
+        "http://haproxy:5005/radio",
+        json={"identifier": identifier, "folder": "radio"},
+    )
 
-    while identifier not in tts_jobs:
-        if time.time() - start > timeout:
-            # print("TIMED OUT WAITING FOR JOB")
-            abort(408)
-        time.sleep(0.05)
-
-    job = tts_jobs[identifier]
-
-    if not job.event.wait(timeout=10):
-        # print("TIMED OUT WAITING FOR JOB")
-        abort(408)
-    return radio_handler(tts_jobs[identifier])
+    if response.status_code != 200:
+        logger.error(f"Radio service error: {response.status_code}")
+        abort(response.status_code)
+    logger.info(f"ID: {identifier} | Radio service request time: {time.time() - req_start:.4f}s")
+    sentence_audio = pydub.AudioSegment.from_file(
+        io.BytesIO(response.content), "ogg"
+    )
+    data_bytes = io.BytesIO()
+    sentence_audio.export(
+        data_bytes, format="ogg"
+    )
+    output = send_file(
+        io.BytesIO(data_bytes.getvalue()),
+        as_attachment=True,
+        download_name="identifier.ogg",
+        mimetype="audio/ogg",
+    )
+    output.headers["audio-length"] = response.headers["audio-length"]
+    return output
 
 
 @app.route("/tts-blips-radio")
@@ -624,21 +613,31 @@ def text_to_speech_blips_radio():
         abort(401)
     identifier = request.args.get("identifier", "")
 
-    timeout = 10
-    start = time.time()
+    req_start = time.time()
+    response = requests.get(
+        "http://haproxy:5005/radio",
+        json={"identifier": identifier, "folder": "radio_blips"},
+    )
 
-    while identifier not in blips_jobs:
-        if time.time() - start > timeout:
-            # print("TIMED OUT WAITING FOR JOB")
-            abort(408)
-        time.sleep(0.05)
-
-    job = blips_jobs[identifier]
-
-    if not job.event.wait(timeout=10):
-        # print("TIMED OUT WAITING FOR JOB")
-        abort(408)
-    return radio_handler(blips_jobs[identifier])
+    if response.status_code != 200:
+        logger.error(f"Radio service error: {response.status_code}")
+        abort(response.status_code)
+    logger.info(f"ID: {identifier} | Radio service request time: {time.time() - req_start:.4f}s")
+    sentence_audio = pydub.AudioSegment.from_file(
+        io.BytesIO(response.content), "ogg"
+    )
+    data_bytes = io.BytesIO()
+    sentence_audio.export(
+        data_bytes, format="ogg"
+    )
+    output = send_file(
+        io.BytesIO(data_bytes.getvalue()),
+        as_attachment=True,
+        download_name="identifier.ogg",
+        mimetype="audio/ogg",
+    )
+    output.headers["audio-length"] = response.headers["audio-length"]
+    return output
 
 
 @app.route("/tts-voices")
