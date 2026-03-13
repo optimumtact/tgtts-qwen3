@@ -5,6 +5,11 @@ import random
 import re
 import subprocess
 import time
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("tts.api")
 
 import librosa
 import numpy as np
@@ -188,7 +193,8 @@ def text_to_speech_handler(
     filter_complex = filter_complex.replace('"', "")
     data_bytes = io.BytesIO()
     final_audio = pydub.AudioSegment.empty()
-    start_time = now()
+    start_time = time.time()
+    logger.debug(f"Handler: {endpoint} | Voice: {voice} | Text: {text[:50]}...")
     if segment:
         for sentence in segmenter.segment(text):
             sentence_audio = pydub.AudioSegment.empty()
@@ -208,6 +214,7 @@ def text_to_speech_handler(
                         )
                     ]
                     if len(cached_sentences) >= max_to_cache:
+                        logger.debug(f"Cache hit: {hashed_message} for sentence segment.")
                         sentence_audio = pydub.AudioSegment.from_file(
                             os.path.join(
                                 "./cache/" + hashed_message + "/",
@@ -216,13 +223,17 @@ def text_to_speech_handler(
                             "wav",
                         )
                     else:
+                        logger.debug(f"Partial cache hit: {hashed_message}. Generating new variant.")
+                        req_start = time.time()
                         response = requests.get(
                             endpoint,
                             json={"text": sentence, "voice": voice},
                         )
 
                         if response.status_code != 200:
+                            logger.error(f"TTS service error: {response.status_code}")
                             abort(response.status_code)
+                        logger.info(f"TTS service request time: {time.time() - req_start:.4f}s")
                         sentence_audio = pydub.AudioSegment.from_file(
                             io.BytesIO(response.content), "wav"
                         )
@@ -235,15 +246,19 @@ def text_to_speech_handler(
                             format="wav",
                         )
                 else:
+                    logger.debug(f"Cache miss: {hashed_message} for sentence segment.")
                     if not os.path.exists("./cache/" + hashed_message + "/"):
                         os.mkdir("./cache/" + hashed_message + "/")
+                    req_start = time.time()
                     response = requests.get(
                         endpoint,
                         json={"text": sentence, "voice": voice},
                     )
 
                     if response.status_code != 200:
+                        logger.error(f"TTS service error: {response.status_code}")
                         abort(response.status_code)
+                    logger.info(f"TTS service request time: {time.time() - req_start:.4f}s")
                     sentence_audio = pydub.AudioSegment.from_file(
                         io.BytesIO(response.content), "wav"
                     )
@@ -252,6 +267,7 @@ def text_to_speech_handler(
                     )
                     cached_messages.append(hashed_message)
             else:
+                req_start = time.time()
                 response = requests.get(
                     endpoint,
                     json={
@@ -263,15 +279,15 @@ def text_to_speech_handler(
                 )
 
                 if response.status_code != 200:
+                    logger.error(f"TTS service error: {response.status_code}")
                     abort(response.status_code)
+                logger.info(f"Blip service request time: {time.time() - req_start:.4f}s")
                 sentence_audio = pydub.AudioSegment.from_file(
                     io.BytesIO(response.content), "wav"
                 )
             sentence_silence = pydub.AudioSegment.silent(250, tts_sample_rate)
             sentence_audio += sentence_silence
             final_audio += sentence_audio
-            # ""Goldman-Eisler (1968) determined that typical speakers paused for an average of 250 milliseconds (ms), with a range from 150 to 400 ms.""
-            # (https://scholarsarchive.byu.edu/cgi/viewcontent.cgi?article=10153&context=etd)
     else:
         sentence_audio = pydub.AudioSegment.empty()
         if (
@@ -290,6 +306,7 @@ def text_to_speech_handler(
                     )
                 ]
                 if len(cached_sentences) >= max_to_cache:
+                    logger.debug(f"Cache hit: {hashed_message}")
                     sentence_audio = pydub.AudioSegment.from_file(
                         os.path.join(
                             "./cache/" + hashed_message + "/",
@@ -298,13 +315,17 @@ def text_to_speech_handler(
                         "wav",
                     )
                 else:
+                    logger.debug(f"Partial cache hit: {hashed_message}")
+                    req_start = time.time()
                     response = requests.get(
                         endpoint,
                         json={"text": text, "voice": voice},
                     )
 
                     if response.status_code != 200:
+                        logger.error(f"TTS service error: {response.status_code}")
                         abort(response.status_code)
+                    logger.info(f"TTS service request time: {time.time() - req_start:.4f}s")
                     sentence_audio = pydub.AudioSegment.from_file(
                         io.BytesIO(response.content), "wav"
                     )
@@ -317,15 +338,19 @@ def text_to_speech_handler(
                         format="wav",
                     )
             else:
+                logger.debug(f"Cache miss: {hashed_message}")
                 if not os.path.exists("./cache/" + hashed_message + "/"):
                     os.mkdir("./cache/" + hashed_message + "/")
+                req_start = time.time()
                 response = requests.get(
                     endpoint,
                     json={"text": text, "voice": voice},
                 )
 
                 if response.status_code != 200:
+                    logger.error(f"TTS service error: {response.status_code}")
                     abort(response.status_code)
+                logger.info(f"TTS service request time: {time.time() - req_start:.4f}s")
                 sentence_audio = pydub.AudioSegment.from_file(
                     io.BytesIO(response.content), "wav"
                 )
@@ -334,6 +359,7 @@ def text_to_speech_handler(
                 )
                 cached_messages.append(hashed_message)
         else:
+            req_start = time.time()
             response = requests.get(
                 endpoint,
                 json={
@@ -346,25 +372,31 @@ def text_to_speech_handler(
             )
 
             if response.status_code != 200:
+                logger.error(f"Blip service error: {response.status_code}")
                 abort(response.status_code)
+            logger.info(f"Blip service request time: {time.time() - req_start:.4f}s")
             sentence_audio = pydub.AudioSegment.from_file(
                 io.BytesIO(response.content), "wav"
             )
         sentence_silence = pydub.AudioSegment.silent(250, tts_sample_rate)
         sentence_audio += sentence_silence
         final_audio += sentence_audio
-        # ""Goldman-Eisler (1968) determined that typical speakers paused for an average of 250 milliseconds (ms), with a range from 150 to 400 ms.""
-        # (https://scholarsarchive.byu.edu/cgi/viewcontent.cgi?article=10153&context=etd)
+    
     if pitch != 0 and endpoint == "http://haproxy:5003/generate-tts":
+        logger.debug(f"Applying pitch shift: {pitch}")
         numpy_audio, sr = audiosegment_to_numpy(final_audio)
         numpy_audio = librosa.effects.pitch_shift(
             numpy_audio, sr=sr, n_steps=pitch, bins_per_octave=24
         )
         final_audio = numpy_to_audiosegment(numpy_audio, sr)
+    
     final_audio.export(data_bytes, format="wav")
     filter_complex = filter_complex.replace("%SAMPLE_RATE%", str(tts_sample_rate))
+    
+    ffmpeg_start = time.time()
     ffmpeg_result = None
     if filter_complex != "":
+        logger.debug(f"Applying filter complex: {filter_complex}")
         ffmpeg_result = subprocess.run(
             [
                 "ffmpeg",
@@ -387,6 +419,7 @@ def text_to_speech_handler(
         )
     else:
         if "silicon" in special_filters:
+            logger.debug("Applying silicon filters")
             ffmpeg_result = subprocess.run(
                 [
                     "ffmpeg",
@@ -430,17 +463,20 @@ def text_to_speech_handler(
                 input=data_bytes.read(),
                 capture_output=True,
             )
-
+    
+    logger.debug(f"FFmpeg processing time: {time.time() - ffmpeg_start:.4f}s")
     ffmpeg_metadata_output = ffmpeg_result.stderr.decode()
 
     matched_length = re.search(r"time=([0-9:\\.]+)", ffmpeg_metadata_output)
-    hh_mm_ss = matched_length.group(1)
-    length = hhmmss_to_seconds(hh_mm_ss)
+    if matched_length:
+        hh_mm_ss = matched_length.group(1)
+        length = hhmmss_to_seconds(hh_mm_ss)
+    else:
+        length = 0
 
-    # print(f"ffmpeg result size: {len(ffmpeg_result.stdout)}")
-    # print(f"ffmpeg time: {now() - start_time}")
     export_audio = io.BytesIO(ffmpeg_result.stdout)
     if "radio" in special_filters:
+        logger.debug("Applying radio prefix/suffix")
         radio_audio = pydub.AudioSegment.from_file(random.choice(radio_starts), "wav")
         radio_audio += pydub.AudioSegment.from_file(
             io.BytesIO(ffmpeg_result.stdout), "ogg"
@@ -449,10 +485,11 @@ def text_to_speech_handler(
         new_data_bytes = io.BytesIO()
         radio_audio.export(new_data_bytes, format="ogg")
         export_audio = io.BytesIO(new_data_bytes.getvalue())
+    
     audioseg_for_length = pydub.AudioSegment.from_file(
         io.BytesIO(export_audio.getvalue()), "ogg"
     )
-    # print(f"pydub time: {now() - start_time}")
+    
     if endpoint == "http://haproxy:5003/generate-tts":
         tts_jobs[identifier].audio = export_audio.getvalue()
         tts_jobs[identifier].event.set()
@@ -468,7 +505,7 @@ def text_to_speech_handler(
     )
     response.headers["audio-length"] = audioseg_for_length.duration_seconds
     del audioseg_for_length
-    print(f"Total time to generate audio: {now() - start_time}")
+    logger.info(f"Total time to generate audio: {time.time() - start_time:.4f}s")
     return response
 
 
@@ -538,6 +575,8 @@ def text_to_speech_blips():
 
 
 def radio_handler(job):
+    start_time = time.time()
+    logger.debug("Applying radio effect to generated audio...")
     base_audio = pydub.AudioSegment.from_file(io.BytesIO(job.audio), "ogg")
     samples, sr = audiosegment_to_numpy(base_audio)
     processed = radio_effect(samples, sr)
@@ -551,6 +590,7 @@ def radio_handler(job):
         mimetype="audio/ogg",
     )
     response.headers["audio-length"] = export_audio.duration_seconds
+    logger.info(f"Radio effect generation time: {time.time() - start_time:.4f}s")
     return response
 
 
