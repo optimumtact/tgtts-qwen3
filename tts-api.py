@@ -545,6 +545,7 @@ def text_to_speech_blips():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
     identifier = request.args.get("identifier", "")
+    logger.debug(f"Endpoint: /tts-blips | ID: {identifier}")
     blips_jobs[identifier] = TTSJob()
     voice = request.args.get("voice", "")
     text = request.json.get("text", "")
@@ -599,21 +600,24 @@ def text_to_speech_radio():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
     identifier = request.args.get("identifier", "")
+    logger.debug(f"Endpoint: /tts-radio | ID: {identifier}")
 
     timeout = 10
     start = time.time()
 
     while identifier not in tts_jobs:
         if time.time() - start > timeout:
-            # print("TIMED OUT WAITING FOR JOB")
+            logger.error(f"Timeout waiting for TTS job {identifier}")
             abort(408)
         time.sleep(0.05)
 
     job = tts_jobs[identifier]
 
     if not job.event.wait(timeout=10):
-        # print("TIMED OUT WAITING FOR JOB")
+        logger.error(f"Timeout waiting for TTS job {identifier} event")
         abort(408)
+    
+    logger.info(f"TTS radio job {identifier} ready for processing after {time.time() - start:.4f}s")
     return radio_handler(tts_jobs[identifier])
 
 
@@ -622,21 +626,24 @@ def text_to_speech_blips_radio():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
     identifier = request.args.get("identifier", "")
+    logger.debug(f"Endpoint: /tts-blips-radio | ID: {identifier}")
 
     timeout = 10
     start = time.time()
 
     while identifier not in blips_jobs:
         if time.time() - start > timeout:
-            # print("TIMED OUT WAITING FOR JOB")
+            logger.error(f"Timeout waiting for blips job {identifier}")
             abort(408)
         time.sleep(0.05)
 
     job = blips_jobs[identifier]
 
     if not job.event.wait(timeout=10):
-        # print("TIMED OUT WAITING FOR JOB")
+        logger.error(f"Timeout waiting for blips job {identifier} event")
         abort(408)
+    
+    logger.info(f"Blips radio job {identifier} ready for processing after {time.time() - start:.4f}s")
     return radio_handler(blips_jobs[identifier])
 
 
