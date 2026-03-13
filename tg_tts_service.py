@@ -177,7 +177,7 @@ class Qwen3_TTS_TG(FasterQwen3TTS):
         self,
         text: str,
         ref_speaker: str,
-        max_new_tokens: int = 2048,
+        max_new_tokens: int = 256,
         min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
