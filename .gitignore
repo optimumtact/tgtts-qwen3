@@ -6,3 +6,4 @@ test_lines/**/*.wav
 voice_mapping.json
 huggingfacecache
 *.ogg 
+__pycache__/
