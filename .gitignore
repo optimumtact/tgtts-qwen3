@@ -4,3 +4,4 @@ speaker_latents/*.blips
 cache/**/*.wav
 test_lines/**/*.wav
 voice_mapping.json
+huggingfacecache
