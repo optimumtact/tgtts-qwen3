@@ -661,22 +661,33 @@ def toggle_logging():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
     
-    current_level = logger.getEffectiveLevel()
-    new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
-    logger.setLevel(new_level)
-    level_name = logging.getLevelName(new_level)
+    level_str = request.args.get("level", "").upper()
+    if level_str:
+        try:
+            logger.setLevel(level_str)
+        except (ValueError, TypeError):
+            return make_response(jsonify({"status": "error", "message": f"Invalid level: {level_str}"}), 400)
+    else:
+        current_level = logger.getEffectiveLevel()
+        new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
+        logger.setLevel(new_level)
     
+    level_name = logging.getLevelName(logger.getEffectiveLevel())
     results = {"api": level_name}
     
+    params = {}
+    if level_str:
+        params["level"] = level_str
+
     # Try toggling backend services
     try:
-        r = requests.get("http://haproxy:5003/toggle-logging", timeout=2)
+        r = requests.get("http://haproxy:5003/toggle-logging", params=params, timeout=2)
         results["tts_service"] = r.json().get("new_level")
     except Exception as e:
         results["tts_service"] = f"Error: {str(e)}"
         
     try:
-        r = requests.get("http://haproxy:5004/toggle-logging", timeout=2)
+        r = requests.get("http://haproxy:5004/toggle-logging", params=params, timeout=2)
         results["blips_service"] = r.json().get("new_level")
     except Exception as e:
         results["blips_service"] = f"Error: {str(e)}"

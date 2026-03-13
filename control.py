@@ -10,14 +10,17 @@ def get_auth_header():
 
 def toggle_logging(args):
     url = f"http://{args.host}:{args.port}/toggle-logging"
+    params = {}
+    if args.level:
+        params["level"] = args.level
     try:
-        print(f"Requesting logging toggle at {url}...")
-        response = requests.get(url, headers=get_auth_header())
+        print(f"Requesting logging level change at {url}...")
+        response = requests.get(url, headers=get_auth_header(), params=params)
         if response.status_code == 200:
-            print("Successfully toggled logging:")
+            print("Successfully updated logging levels:")
             print(json.dumps(response.json(), indent=4))
         else:
-            print(f"Error toggling logging: {response.status_code}")
+            print(f"Error updating logging: {response.status_code}")
             print(response.text)
     except Exception as e:
         print(f"Failed to connect to API: {e}")
@@ -125,7 +128,8 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Toggle Logging Command
-    subparsers.add_parser("toggle-logging", help="Toggle logging level (INFO/DEBUG)")
+    log_parser = subparsers.add_parser("toggle-logging", help="Toggle or set logging level")
+    log_parser.add_argument("level", nargs="?", help="Optional logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
 
     # Generate Audio Command
     gen_parser = subparsers.add_parser("generate", help="Generate audio from text")
