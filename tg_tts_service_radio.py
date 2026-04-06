@@ -135,27 +135,50 @@ def numpy_to_torch_audio(audio_np):
     return torch.from_numpy(audio_np)
 
 def find_corrupted_spans(clean_text, corrupted_text, char_timestamps):
-    """
-    Returns list of (start_sec, end_sec) where a real character was replaced by a symbol.
-    Ignores spaces and punctuation (they have no speech timestamp anyway).
-    """
-    # Filter to only alphabetic chars (ones that have timestamps)
-    clean_chars    = [(i, c) for i, c in enumerate(clean_text)    if c.isalpha()]
-    corrupt_chars  = [(i, c) for i, c in enumerate(corrupted_text) if c.isalpha() or not c.isspace()]
+    clean_chars   = [(i, c) for i, c in enumerate(clean_text)   if c.isalpha() or c == " "]
+    corrupt_chars = [(i, c) for i, c in enumerate(corrupted_text) if c.isalpha() or c == " " or not c.isspace()]
 
-    # Align by position in the alpha-only sequence
+    # First pass: find which alpha indices are corrupted
+    corrupted_alpha_indices = set()
+    alpha_idx = 0
+    for idx, (_, clean_char) in enumerate(clean_chars):
+        if clean_char == " ":
+            continue
+        if idx < len(corrupt_chars) and not corrupt_chars[idx][1].isalpha():
+            corrupted_alpha_indices.add(alpha_idx)
+        alpha_idx += 1
+
+    # Second pass: build spans
     corrupted_spans = []
-    for idx, (clean_idx, clean_char) in enumerate(clean_chars):
+    ts_idx = 0
+
+    for idx, (_, clean_char) in enumerate(clean_chars):
         if idx >= len(corrupt_chars):
             break
         corrupt_char = corrupt_chars[idx][1]
-        is_symbol = not corrupt_char.isalpha()
 
-        if is_symbol and idx < len(char_timestamps):
-            ts = char_timestamps[idx]  # {"char": "H", "start": 0.1, "end": 0.18}
-            corrupted_spans.append((ts["start"], ts["end"]))
+        if clean_char == " ":
+            # Check if the alpha char before or after this space is corrupted
+            prev_alpha = ts_idx - 1
+            next_alpha = ts_idx
+            adjacent_corrupted = (
+                prev_alpha in corrupted_alpha_indices or
+                next_alpha in corrupted_alpha_indices
+            )
+            if not corrupt_char.isspace() and adjacent_corrupted:
+                if ts_idx > 0 and ts_idx < len(char_timestamps):
+                    corrupted_spans.append((
+                        char_timestamps[ts_idx - 1]["end"],
+                        char_timestamps[ts_idx]["start"],
+                    ))
+        else:
+            if not corrupt_char.isalpha() and ts_idx < len(char_timestamps):
+                corrupted_spans.append((
+                    char_timestamps[ts_idx]["start"],
+                    char_timestamps[ts_idx]["end"],
+                ))
+            ts_idx += 1
 
-    # Merge adjacent/overlapping spans (optional but cleaner)
     return merge_spans(corrupted_spans, gap_threshold=0.05)
 
 
@@ -171,70 +194,60 @@ def merge_spans(spans, gap_threshold=0.05):
             merged.append((start, end))
     return merged
 
-def build_static_mask(corrupted_spans, static, total_samples, sr,
-                      fade_ms=10, static_gain=0.8):
-    """
-    Returns a signal the same length as the speech audio:
-    - static * gain during corrupted spans
-    - silence elsewhere
-    - short fades to avoid clicks
-    """
-    fade_samples = int(fade_ms * sr / 1000)
-    mask_envelope = np.zeros(total_samples)
-
-    for start_sec, end_sec in corrupted_spans:
-        s = int(start_sec * sr)
-        e = int(end_sec   * sr)
-        e = min(e, total_samples)
-
-        # Pad the span slightly so static doesn't feel too tight
-        pad = int(0.02 * sr)
-        s = max(0, s - pad)
-        e = min(total_samples, e + pad)
-
-        mask_envelope[s:e] = 1.0
-
-        # Fade in/out to avoid clicks
-        fade_len = min(fade_samples, (e - s) // 2)
-        mask_envelope[s:s+fade_len] *= np.linspace(0, 1, fade_len)
-        mask_envelope[e-fade_len:e] *= np.linspace(1, 0, fade_len)
-
-    # Tile static to match full audio length if needed
-    static_full = np.tile(static, int(np.ceil(total_samples / len(static))))[:total_samples]
-
-    return static_full * mask_envelope * static_gain
-
 def apply_corruption_static(speech_audio, corrupted_spans, static, sr,
-                             duck_gain=0.2, static_gain=0.8):
-    """
-    - Ducks speech during corrupted spans
-    - Adds static bursts in those same windows
-    """
+                             duck_gain=0, static_gain=0.85,
+                             pre_mask_ms=60,   # bleed into preceding audio
+                             post_mask_ms=80,  # tail after character ends
+                             fade_ms=25):
     total = len(speech_audio)
-    fade_ms = 10
-    fade_samples = int(fade_ms * sr / 1000)
-
-    # Build a ducking envelope: 1.0 normally, duck_gain during corruption
     duck_envelope = np.ones(total)
 
+    pre  = int(pre_mask_ms  * sr / 1000)
+    post = int(post_mask_ms * sr / 1000)
+    fade = int(fade_ms      * sr / 1000)
+
     for start_sec, end_sec in corrupted_spans:
-        s = max(0, int(start_sec * sr))
-        e = min(total, int(end_sec * sr))
-        pad = int(0.02 * sr)
-        s = max(0, s - pad)
-        e = min(total, e + pad)
+        s = max(0, int(start_sec * sr) - pre)
+        e = min(total, int(end_sec * sr) + post)
 
         duck_envelope[s:e] = duck_gain
 
-        # Smooth transitions
-        fade_len = min(fade_samples, (e - s) // 2)
-        duck_envelope[s:s+fade_len] = np.linspace(1.0, duck_gain, fade_len)
-        duck_envelope[e-fade_len:e] = np.linspace(duck_gain, 1.0, fade_len)
+        # Fade in (speech → ducked)
+        fade_in_len = min(fade, (e - s) // 2)
+        duck_envelope[s:s+fade_in_len] = np.linspace(1.0, duck_gain, fade_in_len)
+
+        # Fade out (ducked → speech) — longer so word endings stay buried
+        fade_out_len = min(fade * 2, (e - s) // 2)
+        duck_envelope[e-fade_out_len:e] = np.linspace(duck_gain, 1.0, fade_out_len)
 
     ducked_speech = speech_audio * duck_envelope
-    static_mask   = build_static_mask(corrupted_spans, static, total, sr, static_gain=static_gain)
-
+    static_mask   = build_static_mask(corrupted_spans, static, total, sr,
+                                       pre_ms=pre_mask_ms, post_ms=post_mask_ms,
+                                       fade_ms=fade_ms, static_gain=static_gain)
     return ducked_speech + static_mask
+
+
+def build_static_mask(corrupted_spans, static, total_samples, sr,
+                       pre_ms=40, post_ms=40, fade_ms=25, static_gain=0.8):
+    pre  = int(pre_ms  * sr / 1000)
+    post = int(post_ms * sr / 1000)
+    fade = int(fade_ms * sr / 1000)
+
+    mask_envelope = np.zeros(total_samples)
+
+    for start_sec, end_sec in corrupted_spans:
+        s = max(0, int(start_sec * sr) - pre)
+        e = min(total_samples, int(end_sec * sr) + post)
+
+        mask_envelope[s:e] = 1.0
+
+        fade_in_len  = min(fade, (e - s) // 2)
+        fade_out_len = min(fade * 2, (e - s) // 2)
+        mask_envelope[s:s+fade_in_len]       *= np.linspace(0, 1, fade_in_len)
+        mask_envelope[e-fade_out_len:e]       *= np.linspace(1, 0, fade_out_len)
+
+    static_full = np.tile(static, int(np.ceil(total_samples / len(static))))[:total_samples]
+    return static_full * mask_envelope * static_gain
 
 def audiosegment_to_torchaudio(seg):
     samples = np.array(seg.get_array_of_samples(), dtype=np.float32)
