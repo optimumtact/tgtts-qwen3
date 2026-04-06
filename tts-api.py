@@ -1,16 +1,18 @@
 import gc
 import io
+import logging
 import os
 import random
 import re
 import subprocess
 import time
-import logging
 
 import torch
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger("tts.api")
 
 import librosa
@@ -20,7 +22,7 @@ import pysbd
 import requests
 import soundfile as sf
 from blake3 import blake3
-from flask import Flask, abort, make_response, request, send_file, jsonify
+from flask import Flask, abort, jsonify, make_response, request, send_file
 from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
 from stftpitchshift import StftPitchShift
@@ -197,7 +199,9 @@ def text_to_speech_handler(
     data_bytes = io.BytesIO()
     final_audio = pydub.AudioSegment.empty()
     start_time = time.time()
-    logger.debug(f"ID: {identifier} | Handler: {endpoint} | Voice: {voice} | Text: {text[:50]}...")
+    logger.debug(
+        f"ID: {identifier} | Handler: {endpoint} | Voice: {voice} | Text: {text[:50]}..."
+    )
     if segment:
         for sentence in segmenter.segment(text):
             sentence_audio = pydub.AudioSegment.empty()
@@ -217,7 +221,9 @@ def text_to_speech_handler(
                         )
                     ]
                     if len(cached_sentences) >= max_to_cache:
-                        logger.debug(f"ID: {identifier} | Cache hit: {hashed_message} for sentence segment.")
+                        logger.debug(
+                            f"ID: {identifier} | Cache hit: {hashed_message} for sentence segment."
+                        )
                         sentence_audio = pydub.AudioSegment.from_file(
                             os.path.join(
                                 "./cache/" + hashed_message + "/",
@@ -226,7 +232,9 @@ def text_to_speech_handler(
                             "wav",
                         )
                     else:
-                        logger.debug(f"ID: {identifier} | Partial cache hit: {hashed_message}. Generating new variant.")
+                        logger.debug(
+                            f"ID: {identifier} | Partial cache hit: {hashed_message}. Generating new variant."
+                        )
                         req_start = time.time()
                         response = requests.get(
                             endpoint,
@@ -236,7 +244,9 @@ def text_to_speech_handler(
                         if response.status_code != 200:
                             logger.error(f"TTS service error: {response.status_code}")
                             abort(response.status_code)
-                        logger.info(f"ID: {identifier} | TTS service request time: {time.time() - req_start:.4f}s")
+                        logger.info(
+                            f"ID: {identifier} | Endpoint: {endpoint} TTS service request time: {time.time() - req_start:.4f}s"
+                        )
                         sentence_audio = pydub.AudioSegment.from_file(
                             io.BytesIO(response.content), "wav"
                         )
@@ -249,7 +259,9 @@ def text_to_speech_handler(
                             format="wav",
                         )
                 else:
-                    logger.debug(f"ID: {identifier} | Cache miss: {hashed_message} for sentence segment.")
+                    logger.debug(
+                        f"ID: {identifier} | Cache miss: {hashed_message} for sentence segment."
+                    )
                     if not os.path.exists("./cache/" + hashed_message + "/"):
                         os.mkdir("./cache/" + hashed_message + "/")
                     req_start = time.time()
@@ -261,7 +273,9 @@ def text_to_speech_handler(
                     if response.status_code != 200:
                         logger.error(f"TTS service error: {response.status_code}")
                         abort(response.status_code)
-                    logger.info(f"ID: {identifier} | TTS service request time: {time.time() - req_start:.4f}s")
+                    logger.info(
+                        f"ID: {identifier} | Endpoint {endpoint} TTS service request time: {time.time() - req_start:.4f}s"
+                    )
                     sentence_audio = pydub.AudioSegment.from_file(
                         io.BytesIO(response.content), "wav"
                     )
@@ -284,7 +298,9 @@ def text_to_speech_handler(
                 if response.status_code != 200:
                     logger.error(f"TTS service error: {response.status_code}")
                     abort(response.status_code)
-                logger.info(f"ID: {identifier} | Blip service request time: {time.time() - req_start:.4f}s")
+                logger.info(
+                    f"ID: {identifier} | Blip service request time: {time.time() - req_start:.4f}s"
+                )
                 sentence_audio = pydub.AudioSegment.from_file(
                     io.BytesIO(response.content), "wav"
                 )
@@ -318,7 +334,9 @@ def text_to_speech_handler(
                         "wav",
                     )
                 else:
-                    logger.debug(f"ID: {identifier} | Partial cache hit: {hashed_message}")
+                    logger.debug(
+                        f"ID: {identifier} | Partial cache hit: {hashed_message}"
+                    )
                     req_start = time.time()
                     response = requests.get(
                         endpoint,
@@ -328,7 +346,9 @@ def text_to_speech_handler(
                     if response.status_code != 200:
                         logger.error(f"TTS service error: {response.status_code}")
                         abort(response.status_code)
-                    logger.info(f"ID: {identifier} | TTS service request time: {time.time() - req_start:.4f}s")
+                    logger.info(
+                        f"ID: {identifier} | TTS service request time: {time.time() - req_start:.4f}s"
+                    )
                     sentence_audio = pydub.AudioSegment.from_file(
                         io.BytesIO(response.content), "wav"
                     )
@@ -353,7 +373,9 @@ def text_to_speech_handler(
                 if response.status_code != 200:
                     logger.error(f"TTS service error: {response.status_code}")
                     abort(response.status_code)
-                logger.info(f"ID: {identifier} | TTS service request time: {time.time() - req_start:.4f}s")
+                logger.info(
+                    f"ID: {identifier} | TTS service request time: {time.time() - req_start:.4f}s"
+                )
                 sentence_audio = pydub.AudioSegment.from_file(
                     io.BytesIO(response.content), "wav"
                 )
@@ -377,14 +399,16 @@ def text_to_speech_handler(
             if response.status_code != 200:
                 logger.error(f"Blip service error: {response.status_code}")
                 abort(response.status_code)
-            logger.info(f"ID: {identifier} | Blip service request time: {time.time() - req_start:.4f}s")
+            logger.info(
+                f"ID: {identifier} | Blip service request time: {time.time() - req_start:.4f}s"
+            )
             sentence_audio = pydub.AudioSegment.from_file(
                 io.BytesIO(response.content), "wav"
             )
         sentence_silence = pydub.AudioSegment.silent(250, tts_sample_rate)
         sentence_audio += sentence_silence
         final_audio += sentence_audio
-    
+
     if pitch != 0 and endpoint == "http://haproxy:5003/generate-tts":
         logger.debug(f"ID: {identifier} | Applying pitch shift: {pitch}")
         numpy_audio, sr = audiosegment_to_numpy(final_audio)
@@ -392,10 +416,10 @@ def text_to_speech_handler(
             numpy_audio, sr=sr, n_steps=pitch, bins_per_octave=24
         )
         final_audio = numpy_to_audiosegment(numpy_audio, sr)
-    
+
     final_audio.export(data_bytes, format="wav")
     filter_complex = filter_complex.replace("%SAMPLE_RATE%", str(tts_sample_rate))
-    
+
     ffmpeg_start = time.time()
     ffmpeg_result = None
     if filter_complex != "":
@@ -466,8 +490,10 @@ def text_to_speech_handler(
                 input=data_bytes.read(),
                 capture_output=True,
             )
-    
-    logger.debug(f"ID: {identifier} | FFmpeg processing time: {time.time() - ffmpeg_start:.4f}s")
+
+    logger.debug(
+        f"ID: {identifier} | FFmpeg processing time: {time.time() - ffmpeg_start:.4f}s"
+    )
     ffmpeg_metadata_output = ffmpeg_result.stderr.decode()
 
     matched_length = re.search(r"time=([0-9:\\.]+)", ffmpeg_metadata_output)
@@ -488,15 +514,17 @@ def text_to_speech_handler(
         new_data_bytes = io.BytesIO()
         radio_audio.export(new_data_bytes, format="ogg")
         export_audio = io.BytesIO(new_data_bytes.getvalue())
-    
+
     audioseg_for_length = pydub.AudioSegment.from_file(
         io.BytesIO(export_audio.getvalue()), "ogg"
     )
-    
+
     if endpoint == "http://haproxy:5003/generate-tts":
         torch.save(export_audio.getvalue(), "./cache/radio/" + identifier + ".radio")
     else:
-        torch.save(export_audio.getvalue(), "./cache/radio_blips/" + identifier + ".radio")
+        torch.save(
+            export_audio.getvalue(), "./cache/radio_blips/" + identifier + ".radio"
+        )
 
     response = send_file(
         export_audio,
@@ -506,7 +534,9 @@ def text_to_speech_handler(
     )
     response.headers["audio-length"] = audioseg_for_length.duration_seconds
     del audioseg_for_length
-    logger.info(f"ID: {identifier} | Total time to generate audio: {time.time() - start_time:.4f}s")
+    logger.info(
+        f"ID: {identifier} | Total time to generate audio: {time.time() - start_time:.4f}s"
+    )
     return response
 
 
@@ -574,6 +604,7 @@ def text_to_speech_blips():
         identifier,
     )
 
+
 @app.route("/tts-radio")
 def text_to_speech_radio():
     if authorization_token != request.headers.get("Authorization", ""):
@@ -591,14 +622,12 @@ def text_to_speech_radio():
     if response.status_code != 200:
         logger.error(f"Radio service error: {response.status_code}")
         abort(response.status_code)
-    logger.info(f"ID: {identifier} | Radio service request time: {time.time() - req_start:.4f}s")
-    sentence_audio = pydub.AudioSegment.from_file(
-        io.BytesIO(response.content), "ogg"
+    logger.info(
+        f"ID: {identifier} | Radio service request time: {time.time() - req_start:.4f}s"
     )
+    sentence_audio = pydub.AudioSegment.from_file(io.BytesIO(response.content), "ogg")
     data_bytes = io.BytesIO()
-    sentence_audio.export(
-        data_bytes, format="ogg"
-    )
+    sentence_audio.export(data_bytes, format="ogg")
     output = send_file(
         io.BytesIO(data_bytes.getvalue()),
         as_attachment=True,
@@ -624,14 +653,12 @@ def text_to_speech_blips_radio():
     if response.status_code != 200:
         logger.error(f"Radio service error: {response.status_code}")
         abort(response.status_code)
-    logger.info(f"ID: {identifier} | Radio service request time: {time.time() - req_start:.4f}s")
-    sentence_audio = pydub.AudioSegment.from_file(
-        io.BytesIO(response.content), "ogg"
+    logger.info(
+        f"ID: {identifier} | Radio service request time: {time.time() - req_start:.4f}s"
     )
+    sentence_audio = pydub.AudioSegment.from_file(io.BytesIO(response.content), "ogg")
     data_bytes = io.BytesIO()
-    sentence_audio.export(
-        data_bytes, format="ogg"
-    )
+    sentence_audio.export(data_bytes, format="ogg")
     output = send_file(
         io.BytesIO(data_bytes.getvalue()),
         as_attachment=True,
@@ -661,21 +688,24 @@ def tts_health_check():
 def toggle_logging():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
-    
+
     level_str = request.args.get("level", "").upper()
     if level_str:
         try:
             logger.setLevel(level_str)
         except (ValueError, TypeError):
-            return make_response(jsonify({"status": "error", "message": f"Invalid level: {level_str}"}), 400)
+            return make_response(
+                jsonify({"status": "error", "message": f"Invalid level: {level_str}"}),
+                400,
+            )
     else:
         current_level = logger.getEffectiveLevel()
         new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
         logger.setLevel(new_level)
-    
+
     level_name = logging.getLevelName(logger.getEffectiveLevel())
     results = {"api": level_name}
-    
+
     params = {}
     if level_str:
         params["level"] = level_str
@@ -686,13 +716,19 @@ def toggle_logging():
         results["tts_service"] = r.json().get("new_level")
     except Exception as e:
         results["tts_service"] = f"Error: {str(e)}"
-        
+
+    try:
+        r = requests.get("http://haproxy:5005/toggle-logging", params=params, timeout=2)
+        results["radio_service"] = r.json().get("new_level")
+    except Exception as e:
+        results["radio_service"] = f"Error: {str(e)}"
+
     try:
         r = requests.get("http://haproxy:5004/toggle-logging", params=params, timeout=2)
         results["blips_service"] = r.json().get("new_level")
     except Exception as e:
         results["blips_service"] = f"Error: {str(e)}"
-        
+
     return make_response(jsonify(results), 200)
 
 
