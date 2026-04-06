@@ -579,11 +579,13 @@ def text_to_speech_radio():
     if authorization_token != request.headers.get("Authorization", ""):
         abort(401)
     identifier = request.args.get("identifier", "")
+    raw_text = request.json.get("raw_text", "")
+    gibberish_text = request.json.get("gibberish_text", "")
 
     req_start = time.time()
     response = requests.get(
         "http://haproxy:5005/radio",
-        json={"identifier": identifier, "folder": "radio"},
+        json={"identifier": identifier, "folder": "radio", "raw_text": raw_text, "gibberish_text": gibberish_text},
     )
 
     if response.status_code != 200:

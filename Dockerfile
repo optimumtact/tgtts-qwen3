@@ -40,6 +40,7 @@ WORKDIR /workspace
 # Copy application code last
 COPY *.py ./
 COPY *.wav ./
+COPY *.ogg ./
 COPY blips_sfx/ /workspace/blips_sfx
 
 # Set environment again if needed

@@ -23,7 +23,18 @@ from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
 from stftpitchshift import StftPitchShift
 import torch
+import torchaudio
+from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
 app = Flask(__name__)
+
+print("Loading Wav2Vec2...")
+# Load model
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
+model  = bundle.get_model().to(device)
+labels = bundle.get_labels()  # ('-', 'A', 'B', ..., '|')
+print("Loaded Wav2Vec2.")
+
 def audiosegment_to_numpy(seg):
     samples = np.array(seg.get_array_of_samples())
 
@@ -107,35 +118,242 @@ def load_and_match(path, target_sr):
 
     return audio
 
+def numpy_to_torch_audio(audio_np):
+    # Ensure float32
+    if audio_np.dtype != np.float32:
+        if np.issubdtype(audio_np.dtype, np.integer):
+            audio_np = audio_np.astype(np.float32) / np.iinfo(audio_np.dtype).max
+        else:
+            audio_np = audio_np.astype(np.float32)
 
-def radio_effect(audio, sr):
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
-    click_on = load_and_match("mic_click_on.wav", sr)
-    click_off = load_and_match("mic_click_off.wav", sr)
-    static = load_and_match("diffstatic.wav", sr)
-    speech = librosa.resample(audio, orig_sr=sr, target_sr=8000)
-    speech = librosa.resample(speech, orig_sr=8000, target_sr=48000)
-    speech = normalize(speech, 0.5)
-    speech = bandpass(speech, sr)
-    speech = saturate(speech, 2)
-    speech = normalize(speech, 0.7)
-    static = static[: len(speech)]
-    speech = speech + static * 0.2
-    output = np.concatenate([click_on, speech, static[: int(sr * 0.1)], click_off])
+    # Shape to (channels, samples)
+    if audio_np.ndim == 1:
+        audio_np = audio_np[np.newaxis, :]
+    else:
+        audio_np = audio_np.T
 
-    output = normalize(output, 0.9)
+    return torch.from_numpy(audio_np)
 
-    return output
+def find_corrupted_spans(clean_text, corrupted_text, char_timestamps):
+    """
+    Returns list of (start_sec, end_sec) where a real character was replaced by a symbol.
+    Ignores spaces and punctuation (they have no speech timestamp anyway).
+    """
+    # Filter to only alphabetic chars (ones that have timestamps)
+    clean_chars    = [(i, c) for i, c in enumerate(clean_text)    if c.isalpha()]
+    corrupt_chars  = [(i, c) for i, c in enumerate(corrupted_text) if c.isalpha() or not c.isspace()]
+
+    # Align by position in the alpha-only sequence
+    corrupted_spans = []
+    for idx, (clean_idx, clean_char) in enumerate(clean_chars):
+        if idx >= len(corrupt_chars):
+            break
+        corrupt_char = corrupt_chars[idx][1]
+        is_symbol = not corrupt_char.isalpha()
+
+        if is_symbol and idx < len(char_timestamps):
+            ts = char_timestamps[idx]  # {"char": "H", "start": 0.1, "end": 0.18}
+            corrupted_spans.append((ts["start"], ts["end"]))
+
+    # Merge adjacent/overlapping spans (optional but cleaner)
+    return merge_spans(corrupted_spans, gap_threshold=0.05)
+
+
+def merge_spans(spans, gap_threshold=0.05):
+    if not spans:
+        return []
+    spans = sorted(spans)
+    merged = [spans[0]]
+    for start, end in spans[1:]:
+        if start - merged[-1][1] <= gap_threshold:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+def build_static_mask(corrupted_spans, static, total_samples, sr,
+                      fade_ms=10, static_gain=0.8):
+    """
+    Returns a signal the same length as the speech audio:
+    - static * gain during corrupted spans
+    - silence elsewhere
+    - short fades to avoid clicks
+    """
+    fade_samples = int(fade_ms * sr / 1000)
+    mask_envelope = np.zeros(total_samples)
+
+    for start_sec, end_sec in corrupted_spans:
+        s = int(start_sec * sr)
+        e = int(end_sec   * sr)
+        e = min(e, total_samples)
+
+        # Pad the span slightly so static doesn't feel too tight
+        pad = int(0.02 * sr)
+        s = max(0, s - pad)
+        e = min(total_samples, e + pad)
+
+        mask_envelope[s:e] = 1.0
+
+        # Fade in/out to avoid clicks
+        fade_len = min(fade_samples, (e - s) // 2)
+        mask_envelope[s:s+fade_len] *= np.linspace(0, 1, fade_len)
+        mask_envelope[e-fade_len:e] *= np.linspace(1, 0, fade_len)
+
+    # Tile static to match full audio length if needed
+    static_full = np.tile(static, int(np.ceil(total_samples / len(static))))[:total_samples]
+
+    return static_full * mask_envelope * static_gain
+
+def apply_corruption_static(speech_audio, corrupted_spans, static, sr,
+                             duck_gain=0.2, static_gain=0.8):
+    """
+    - Ducks speech during corrupted spans
+    - Adds static bursts in those same windows
+    """
+    total = len(speech_audio)
+    fade_ms = 10
+    fade_samples = int(fade_ms * sr / 1000)
+
+    # Build a ducking envelope: 1.0 normally, duck_gain during corruption
+    duck_envelope = np.ones(total)
+
+    for start_sec, end_sec in corrupted_spans:
+        s = max(0, int(start_sec * sr))
+        e = min(total, int(end_sec * sr))
+        pad = int(0.02 * sr)
+        s = max(0, s - pad)
+        e = min(total, e + pad)
+
+        duck_envelope[s:e] = duck_gain
+
+        # Smooth transitions
+        fade_len = min(fade_samples, (e - s) // 2)
+        duck_envelope[s:s+fade_len] = np.linspace(1.0, duck_gain, fade_len)
+        duck_envelope[e-fade_len:e] = np.linspace(duck_gain, 1.0, fade_len)
+
+    ducked_speech = speech_audio * duck_envelope
+    static_mask   = build_static_mask(corrupted_spans, static, total, sr, static_gain=static_gain)
+
+    return ducked_speech + static_mask
+
+def audiosegment_to_torchaudio(seg):
+    samples = np.array(seg.get_array_of_samples(), dtype=np.float32)
+    samples /= float(2 ** (seg.sample_width * 8 - 1))  # normalize to [-1, 1]
+    
+    waveform = torch.from_numpy(samples).unsqueeze(0)  # (1, T)
+    
+    # stereo: interleaved → (2, T)
+    if seg.channels == 2:
+        waveform = waveform.reshape(2, -1, seg.channels).squeeze(-1)  # cleaner split
+        waveform = waveform.view(seg.channels, -1)
+    
+    return waveform, seg.frame_rate
+
+def radio_effect(audio_path, raw_text, gibberish_text):
+    base_audio = pydub.AudioSegment.from_file(audio_path, format="ogg")
+    if gibberish_text != "":
+        waveform, sr = audiosegment_to_torchaudio(base_audio)
+        if sr != bundle.sample_rate:
+            waveform = torchaudio.functional.resample(waveform, sr, bundle.sample_rate)
+        waveform = waveform.to("cuda")
+        with torch.inference_mode():
+            emissions, _ = model(waveform)
+            log_probs = torch.log_softmax(emissions, dim=-1)
+
+            label2idx = {c: i for i, c in enumerate(labels)}
+
+            def tokenize(text, label2idx):
+                tokens = []
+                for c in text.upper().replace(" ", "|"):
+                    if c in label2idx:
+                        tokens.append(label2idx[c])
+                    # silently skip anything not in the vocab (punctuation etc.)
+                return tokens
+
+            token_ids = tokenize(raw_text, label2idx)
+            targets   = torch.tensor(token_ids, dtype=torch.int32).unsqueeze(0).to(device)
+            alignments, scores = torchaudio.functional.forced_align(
+                log_probs, targets, blank=0
+            )
+            char_spans = torchaudio.functional.merge_tokens(alignments[0], scores[0])
+            FRAME_STRIDE = 320          # wav2vec2-base: 320 samples per frame @ 16kHz
+            SAMPLE_RATE  = bundle.sample_rate   # 16000
+
+            def frames_to_sec(f):
+                return (f * FRAME_STRIDE) / SAMPLE_RATE
+
+            char_timestamps = []
+            for span in char_spans:
+                char = labels[span.token]
+                if char == "|":
+                    continue
+                char_timestamps.append({
+                    "char":  char,
+                    "start": frames_to_sec(span.start),
+                    "end":   frames_to_sec(span.end),
+                    "score": span.score,
+                })
+
+
+            click_on = load_and_match("mic_click_on.wav", 48000)
+            click_off = load_and_match("mic_click_off.wav", 48000)
+            static = load_and_match("diffstatic.wav", 48000)
+            samples, numpy_sr = audiosegment_to_numpy(base_audio)
+            if samples.ndim > 1:
+                samples = samples.mean(axis=1)
+            speech = librosa.resample(samples, orig_sr=numpy_sr, target_sr=8000)
+            speech = librosa.resample(speech, orig_sr=8000, target_sr=48000)
+            speech = normalize(speech, 0.5)
+            speech = bandpass(speech, numpy_sr)
+            speech = saturate(speech, 2)
+            speech = normalize(speech, 0.7)
+
+            # Find which time windows are "corrupted"
+            corrupted_spans = find_corrupted_spans(raw_text, gibberish_text, char_timestamps)
+
+            # Duck speech + inject static bursts
+            speech = apply_corruption_static(speech, corrupted_spans, static, numpy_sr,
+                                            duck_gain=0, static_gain=0.85)
+
+            static = static[: len(speech)]
+            speech = speech + static * 0.2
+            output = np.concatenate([click_on, speech, static[: int(numpy_sr * 0.1)], click_off])
+
+            output = normalize(output, 0.9)
+
+            return output
+    else:
+        samples, numpy_sr = audiosegment_to_numpy(base_audio)
+        if samples.ndim > 1:
+            samples = samples.mean(axis=1)
+        click_on = load_and_match("mic_click_on.wav", numpy_sr)
+        click_off = load_and_match("mic_click_off.wav", numpy_sr)
+        static = load_and_match("diffstatic.wav", numpy_sr)
+        speech = librosa.resample(samples, orig_sr=numpy_sr, target_sr=8000)
+        speech = librosa.resample(speech, orig_sr=8000, target_sr=48000)
+        speech = normalize(speech, 0.5)
+        speech = bandpass(speech, numpy_sr)
+        speech = saturate(speech, 2)
+        speech = normalize(speech, 0.7)
+        static = static[: len(speech)]
+        speech = speech + static * 0.2
+        output = np.concatenate([click_on, speech, static[: int(numpy_sr * 0.1)], click_off])
+
+        output = normalize(output, 0.9)
+
+        return output
 
 
 @app.route("/radio")
 def radio_handler():
     identifier = request.json.get("identifier", "")
     folder = request.json.get("folder", "")
+    raw_text = request.json.get("raw_text", "")
+    gibberish_text = request.json.get("gibberish_text", "")
     start_time = time.time()
     logger.debug(f"ID: {identifier} | Applying radio effect to generated audio...")
-
+    if gibberish_text == "":
+        logger.debug(f"ID: {identifier} | No radio scrambling, so we're skipping that.")
     timeout = 10
     start = time.time()
 
@@ -144,10 +362,8 @@ def radio_handler():
             logger.debug(f"ID: {identifier} | Timed out waiting for the input file!")
             abort(408)
         time.sleep(0.05)
-    base_audio = pydub.AudioSegment.from_file(io.BytesIO(torch.load("./cache/" + folder + "/" + identifier + ".radio", weights_only=False)), format="ogg")
-    samples, sr = audiosegment_to_numpy(base_audio)
-    processed = radio_effect(samples, sr)
-    export_audio = numpy_to_audiosegment(processed, sr)
+    processed = radio_effect(io.BytesIO(torch.load("./cache/" + folder + "/" + identifier + ".radio", weights_only=False)), raw_text, gibberish_text)
+    export_audio = numpy_to_audiosegment(processed, 48000)
     output_bytes = io.BytesIO()
     export_audio.export(output_bytes, format="ogg")
     result = send_file(
@@ -160,7 +376,11 @@ def radio_handler():
 if __name__ == "__main__":
     from waitress import serve
     print("Warming up...")
-    noise = radio_effect(np.random.randn(int(48000 * 1)), 48000)
+    noise = radio_effect(
+        "./radio_warmup.ogg",
+        "The quick brown fox jumps over the lazy dog.",
+        "T&e q#$ck $%#!@ fox ju### ov2r 32e $$zy *(g."
+    ),
     del noise
     print("Serving Radio Effects on :5005")
     serve(app, host="0.0.0.0", port=5005, backlog=32, channel_timeout=8)
