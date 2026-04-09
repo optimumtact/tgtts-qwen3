@@ -12,7 +12,11 @@ import re
 import asyncio
 import soundfile as sf
 
-from faster_qwen3_tts import FasterQwen3TTS
+#from modelscope import snapshot_download
+#snapshot_download("OpenBMB/VoxCPM2", local_dir='./pretrained_models/VoxCPM2') # specify the local directory to save the model
+
+from voxcpm import VoxCPM
+
 from qwen_asr import Qwen3ASRModel
 
 asr_model = Qwen3ASRModel.from_pretrained(
@@ -28,32 +32,58 @@ lines = ["We're smokin' filtered crack, you stupid piece of shit, I'll fuckin' k
 		 "This shit ain't nothin' to me, man!"]
 from typing import Generator, Optional, Tuple, Union
 
-root_folder = "E:\hfc_en-US_F\hifi_captain_voices"
+root_folder = "/mnt/e/hfc_en-US_F/hifi_captain_voices"
 import io 
-class Qwen3_TTS_TG(FasterQwen3TTS):
+
+class VoxCPM2_tg(VoxCPM):
 	
-	def _prepare_generation_tg(
+	def _generate(
 		self,
 		text: str,
-		ref_speaker: str,
-	):
-		"""Prepare inputs for generation (shared by streaming and non-streaming).
+		speaker_name: str = None,
+		cfg_value: float = 2.0,
+		inference_timesteps: int = 10,
+		min_len: int = 2,
+		max_len: int = 4096,
+		retry_badcase: bool = True,
+		retry_badcase_max_times: int = 3,
+		retry_badcase_ratio_threshold: float = 6.0,
+		streaming: bool = False,
+	) -> Generator[np.ndarray, None, None]:
+		"""Synthesize speech for the given text and return a single waveform.
 
 		Args:
-			xvec_only: When True (default), use only the speaker embedding (x-vector) for voice
-				cloning instead of the full ICL acoustic prompt. This prevents the model from
-				continuing the reference audio's last phoneme and allows natural language switching.
-				When False, the full reference audio codec tokens are included in context (ICL mode).
+			text: Input text to synthesize.
+			prompt_wav_path: The speaker's name.
+			cfg_value: Guidance scale for the generation model.
+			inference_timesteps: Number of inference steps.
+			min_len: Minimum audio length.
+			max_len: Maximum token length during generation.
+			normalize: Whether to run text normalization before generation.
+			denoise: Whether to denoise the prompt/reference audio if a
+				denoiser is available.
+			retry_badcase: Whether to retry badcase.
+			retry_badcase_max_times: Maximum number of times to retry badcase.
+			retry_badcase_ratio_threshold: Threshold for audio-to-text ratio.
+			streaming: Whether to return a generator of audio chunks.
+		Returns:
+			Generator of numpy.ndarray: 1D waveform array (float32) on CPU.
+			Yields audio chunks for each generation step if ``streaming=True``,
+			otherwise yields a single array containing the final audio.
 		"""
-		input_texts = [self.model._build_assistant_text(text)]
-		input_ids = self.model._tokenize_texts(input_texts)
-		if not os.path.isfile("./speaker_latents/" + ref_speaker + ".speaker_latent"):
-			print("Speaker " + ref_speaker + " not cached, caching...")
+		if not text.strip() or not isinstance(text, str):
+			raise ValueError("target text must be a non-empty string")
+
+		text = text.replace("\n", " ")
+		text = re.sub(r"\s+", " ", text)
+		fixed_prompt_cache = None
+		if not os.path.isfile("./speaker_latents/" + speaker_name + ".speaker_latent"):
+			print("Speaker " + speaker_name + " not cached, caching...")
 			audio_extensions = (".mp3", ".wav", ".ogg", ".flac", ".m4a")
 			from tqdm import tqdm
 			# Recursively find all audio files
 			audio_files = []
-			for dirpath, _, filenames in os.walk(root_folder + "/" + ref_speaker):
+			for dirpath, _, filenames in os.walk(root_folder + "/" + speaker_name):
 				for f in filenames:
 					if f.lower().endswith(audio_extensions):
 						audio_files.append(os.path.join(dirpath, f))
@@ -78,6 +108,8 @@ class Qwen3_TTS_TG(FasterQwen3TTS):
 					sample_width=data.dtype.itemsize,
 					channels=data.shape[1]
 				)
+				if audio.duration_seconds < 2:
+					continue
 				if current_duration + audio.duration_seconds >= 30:
 					#print("Skipping " + file + " for duration, current is " + str(current_duration) + ", combined would be " + str(audio.duration_seconds))
 					continue
@@ -100,125 +132,40 @@ class Qwen3_TTS_TG(FasterQwen3TTS):
 				language="English", # set "English" to force the language
 			)
 			ref_text = output[0].text
-			read_audio, audio_sr = sf.read(io.BytesIO(data_bytes.getvalue()), always_2d=False)
-			if read_audio.ndim > 1:
-				read_audio = read_audio.mean(axis=1)  # convert to mono
-			silence = np.zeros(int(0.5 * audio_sr), dtype=np.float32)
-			read_audio = np.concatenate([read_audio, silence])
-			ref_audio_input = (read_audio, audio_sr)
-			prompt_items = self.model.create_voice_clone_prompt(
-				ref_audio=ref_audio_input,
-				ref_text=ref_text
+
+			fixed_prompt_cache = self.tts_model.build_prompt_cache(
+				prompt_text=ref_text,
+				prompt_wav_path="temp.wav",
+				reference_wav_path="temp.wav",
 			)
-			vcp = self.model._prompt_items_to_voice_clone_prompt(prompt_items)
-
-			ref_ids = []
-			rt = prompt_items[0].ref_text
-			if rt:
-				ref_texts = [self.model._build_ref_text(rt)]
-				ref_ids.append(self.model._tokenize_texts(ref_texts)[0])
-			else:
-				ref_ids.append(None)
-			torch.save((vcp, ref_ids), "./speaker_latents/" + ref_speaker + ".speaker_latent")
+			torch.save(fixed_prompt_cache, "./speaker_latents/" + speaker_name + ".speaker_latent")
 		else:
-			vcp, ref_ids = torch.load("./speaker_latents/" + ref_speaker + ".speaker_latent")
+			fixed_prompt_cache = torch.load("./speaker_latents/" + speaker_name + ".speaker_latent")
 
-		m = self.model.model
-
-		tie, tam, tth, tpe = self._build_talker_inputs_local(
-			m=m,
-			input_ids=input_ids,
-			ref_ids=ref_ids,
-			voice_clone_prompt=vcp,
-			languages=["English"],
-			speakers=None,
-			non_streaming_mode=True,
+		generate_result = self.tts_model._generate_with_prompt_cache(
+			target_text=text,
+			prompt_cache=fixed_prompt_cache,
+			min_len=min_len,
+			max_len=max_len,
+			inference_timesteps=inference_timesteps,
+			cfg_value=cfg_value,
+			retry_badcase=retry_badcase,
+			retry_badcase_max_times=retry_badcase_max_times,
+			retry_badcase_ratio_threshold=retry_badcase_ratio_threshold,
+			streaming=streaming,
 		)
 
-		if not self._warmed_up:
-			self._warmup(tie.shape[1])
+		for wav, _, _ in generate_result:
+			yield wav.squeeze(0).cpu().numpy()
 
-		talker = m.talker
-		config = m.config.talker_config
-		talker.rope_deltas = None
 
-		ref_codes = vcp["ref_code"][0]
+model = VoxCPM2_tg.from_pretrained(
+  "openbmb/VoxCPM2",
+  load_denoiser=False,
+)
 
-		return m, talker, config, tie, tam, tth, tpe, ref_codes
-
-	@torch.inference_mode()
-	def generate_voice_clone_tg(
-		self,
-		text: str,
-		ref_speaker: str,
-		max_new_tokens: int = 2048,
-		min_new_tokens: int = 2,
-		temperature: float = 0.9,
-		top_k: int = 50,
-		top_p: float = 1.0,
-		do_sample: bool = True,
-		repetition_penalty: float = 1.05,
-	) -> Tuple[list, int]:
-		from faster_qwen3_tts.generate import fast_generate
-
-		m, talker, config, tie, tam, tth, tpe, ref_codes = self._prepare_generation_tg(
-			text,
-			ref_speaker,
-		)
-
-		codec_ids, _ = fast_generate(
-			talker=talker,
-			talker_input_embeds=tie,
-			attention_mask=tam,
-			trailing_text_hiddens=tth,
-			tts_pad_embed=tpe,
-			config=config,
-			predictor_graph=self.predictor_graph,
-			talker_graph=self.talker_graph,
-			max_new_tokens=max_new_tokens,
-			min_new_tokens=min_new_tokens,
-			temperature=temperature,
-			top_k=top_k,
-			top_p=top_p,
-			do_sample=do_sample,
-			repetition_penalty=repetition_penalty,
-		)
-
-		if codec_ids is None:
-			print("Generation returned no tokens")
-			return [np.zeros(1, dtype=np.float32)], self.sample_rate
-
-		# In ICL mode: prepend reference codes before decoding so the codec decoder
-		# has acoustic context from the reference audio (matches official implementation).
-		speech_tokenizer = m.speech_tokenizer
-		if ref_codes is not None:
-			ref_codes_dev = ref_codes.to(codec_ids.device)
-			codes_for_decode = torch.cat([ref_codes_dev, codec_ids], dim=0)
-		else:
-			codes_for_decode = codec_ids
-		audio_list, sr = speech_tokenizer.decode({"audio_codes": codes_for_decode.unsqueeze(0)})
-
-		# Convert to numpy and trim off the reference audio portion
-		ref_len = ref_codes.shape[0] if ref_codes is not None else 0
-		total_len = codes_for_decode.shape[0]
-		audio_arrays = []
-		for a in audio_list:
-			if hasattr(a, 'cpu'):  # torch tensor
-				a = a.flatten().cpu().numpy()
-			else:  # already numpy
-				a = a.flatten() if hasattr(a, 'flatten') else a
-			if ref_len > 0:
-				cut = int(ref_len / max(total_len, 1) * len(a))
-				a = a[cut:]
-			audio_arrays.append(a)
-		return audio_arrays, sr
-
-model = Qwen3_TTS_TG.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 from pathlib import Path
 import time
-from LavaSR.model import LavaEnhance2 
-lava_model = LavaEnhance2("YatharthS/LavaSR", "cuda")
-
 
 from scipy.signal import butter, lfilter
 def bandpass(x, sr, low=300, high=3000, order=4):
@@ -322,25 +269,24 @@ ignore = []
 print("Begin latent generation:")
 from pathlib import Path
 start_time = time.perf_counter()
-folder = Path("E:\hfc_en-US_F\hifi_captain_voices")
+folder = Path("/mnt/e/hfc_en-US_F/hifi_captain_voices")
 import tqdm
 for subfolder in tqdm.tqdm(folder.iterdir()):
 	if subfolder.is_dir():
 		if subfolder.name in ignore:
 			continue
-		if os.path.isfile("./speaker_latents/" + subfolder.name + ".speaker_latent"):
-			continue
+		#if os.path.isfile("./speaker_latents/" + subfolder.name + ".speaker_latent"):
+			#continue
 		print(subfolder.name)
 		current_line = 0
 		for line in random.sample(lines, 3):
 			current_line += 1
-			real_list, real_sr = model.generate_voice_clone_tg(
+			wav = model.generate(
 				text=line, 
-				ref_speaker=subfolder.name
+				speaker_name=subfolder.name,
+				max_len=128,
+				retry_badcase=False
 			)
-			sf.write("./test_lines/" + subfolder.name + "_" + str(current_line) + ".wav", real_list[0], real_sr)
-			input_audio, input_sr = lava_model.load_audio("./test_lines/" + subfolder.name + "_" + str(current_line) + ".wav", input_sr=24000)
-			output_audio = lava_model.enhance(input_audio, denoise=False).cpu().numpy().squeeze()
-			sf.write("./test_lines/" + subfolder.name + "_" + str(current_line) + ".wav", output_audio, 48000)
+			sf.write("./test_lines/" + subfolder.name + "_" + str(current_line) + ".wav", wav, 48000)
 end_time = time.perf_counter()
 print("Generation ended taking " + str(end_time - start_time) + " seconds.")
