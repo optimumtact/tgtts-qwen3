@@ -18,22 +18,16 @@ logger = logging.getLogger("tts.blips")
 from torchaudio._extension.utils import _init_dll_path
 
 _init_dll_path()  # I LOVE PYTORCH I LOVE PYTORCH I LOVE PYTORCH FUCKING TORCHAUDIO SUCKS ASS
-import asyncio
 import io
 import json
 import os
 import random
-import re
-import threading
 
 import librosa
 import numpy as np
-import soundfile as sf
 import torch
-import torchaudio
-from faster_qwen3_tts import FasterQwen3TTS
 from flask import Flask, request, send_file
-from pydub import AudioSegment, effects
+from pydub import AudioSegment
 from tqdm import tqdm
 
 voice_name_mapping = {}

@@ -28,9 +28,9 @@ ARG CACHEBUST=1 # Allows us to bust docker build cache.
 WORKDIR /workspace
 ENV TORCH_CUDA_ARCH_LIST=8.9
 # Install Python dependencies
-RUN pip install --no-cache-dir flask waitress tqdm pysbd blake3 stftpitchshift \
-    && pip install --no-cache-dir git+https://github.com/ysharma3501/LavaSR.git \
-    && pip install --no-cache-dir faster-qwen3-tts
+RUN pip install --no-cache-dir flask waitress tqdm pysbd blake3 stftpitchshift pydub \
+    && pip install --no-cache-dir https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu126torch2.7-cp311-cp311-linux_x86_64.whl \
+    && pip install --no-cache-dir nano-vllm-voxcpm
 
 
 # Stage 3: Copy application code
