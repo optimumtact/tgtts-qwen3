@@ -324,16 +324,18 @@ if __name__ == "__main__":
     )
     print("Done loading.")
     print("Beginning voice caching")
-    model.latent_cache = {}
-    print("Cached voices.")
+    first_latent = None
+    for k, v in tqdm(voice_name_mapping.items()):
+        if not first_latent:
+            first_latent = v
+            break
     print("Warming model up...")
     with tts_lock:
-        for k, v in tqdm(voice_name_mapping.items()):
-            trash = io.BytesIO()
-            chunks = [chunk for chunk in model.generate(target_text="The quick brown fox jumps over the lazy dog.", prompt_id = v, max_generate_length = 256)]
-            wav = np.concatenate(chunks, axis=0)
-            sf.write(trash, wav, 48000, format="wav")
-            del trash
+        trash = io.BytesIO()
+        chunks = [chunk for chunk in model.generate(target_text="The quick brown fox jumps over the lazy dog.", prompt_id = first_latent, max_generate_length = 256)]
+        wav = np.concatenate(chunks, axis=0)
+        sf.write(trash, wav, 48000, format="wav")
+        del trash
     print("Serving TTS on :5003")
     serve(app, host="0.0.0.0", port=5003, backlog=32, channel_timeout=8)
     print("Closing server...")
