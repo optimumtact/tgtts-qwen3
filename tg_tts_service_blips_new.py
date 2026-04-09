@@ -161,23 +161,6 @@ def text_to_speech_blips():
                             # 	result_sound = new_sound
                             continue
                         if letter == "?" or letter == "!":
-                            if not i == len(text) - 1:
-                                continue
-                        path = "default"
-                        if letter in sfx_to_use:
-                            path = sfx_sound_mapping[letter]
-                        file_path = "blips_sfx/" + path + ".wav"
-
-                        letter_sound = AudioSegment.from_file(file_path)
-                        samples, sr = audiosegment_to_numpy(letter_sound)
-                        new_audio = numpy_to_audiosegment(
-                            samples,
-                            sr,
-                            sample_width=letter_sound.sample_width,
-                            channels=letter_sound.channels,
-                        )
-                        new_audio = change_volume(new_audio, 0.3)
-                        if letter == "?" or letter == "!":
                             letter_sound = AudioSegment.from_file(
                                 io.BytesIO(
                                     blips_cache[voice][blip_base][str(blip_number)][
@@ -213,12 +196,11 @@ def text_to_speech_blips():
                             )
                             speech_audio = change_volume(speech_audio, 0.6)
                             stripped_sound = strip_silence(speech_audio)
-                            new_audio = new_audio.overlay(stripped_sound)
                             # print("ran shit")
-                        if not i == 0:
-                            result_sound = result_sound.append(new_audio, crossfade=150)
-                        else:
-                            result_sound = new_audio
+                            if not i == 0:
+                                result_sound = result_sound.append(stripped_sound, crossfade=150)
+                            else:
+                                result_sound = stripped_sound
                 else:
                     if not i % 2 == 0:
                         continue  # Skip every other letter
