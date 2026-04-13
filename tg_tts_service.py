@@ -191,32 +191,29 @@ async def text_to_speech(request: Request):
     wav_data = np.concatenate(chunks, axis=0)
     tts_duration = time.time() - gen_start
 
-    # Post-processing
-    norm_start = time.time()
-    # Convert numpy to WAV bytes for Pydub
-    proc_buffer = io.BytesIO()
-    sf.write(proc_buffer, wav_data, 48000, format="wav")
-    proc_buffer.seek(0)
-
-    raw_sound = AudioSegment.from_file(proc_buffer, "wav")
-    normalized = normalize_to_target(raw_sound, -25)
-    normalized = cap_loudness(normalized, max_dbfs=-5)
-    normalized = effects.normalize(normalized)
-
-    final_buffer = io.BytesIO()
-    normalized.export(final_buffer, format="wav")
-    normalize_duration = time.time() - norm_start
-
+    tts_databytes = io.BytesIO()
+    sf.write(tts_databytes, wav_data, 48000, format="wav")
+    gen_end = time.time()
+    tts_duration = gen_end - gen_start
+    normalise_start = time.time()
+    rawsound = AudioSegment.from_file(io.BytesIO(tts_databytes.getvalue()), "wav")
+    temp_databytes = io.BytesIO()
+    normalizedsound = normalize_to_target(rawsound, -25)
+    normalizedsound = cap_loudness(normalizedsound, max_dbfs=-5)
+    normalizedsound = effects.normalize(rawsound)
+    normalizedsound.export(temp_databytes, format="wav")
+    normalised_end = time.time()
+    normalize_duration = normalised_end - normalise_start
+    audio_duration = len(normalizedsound) / 1000
     total_time = time.time() - request_start_time
-    audio_dur = len(normalized) / 1000
-
-    log_msg = f"Request complete: Total {total_time:.4f}s | Audio {audio_dur:.2f}s | TTS {tts_duration:.4f}s"
+    logmsg = f"Slow request detected. Total time: {total_time:.4f}s | Voice: {voice} | Text: {text} | Audio Duration: {audio_duration:.2f}s | TTS Time: {tts_duration:.4f}s | Normalization Time: {normalize_duration:.4f}s"
     if total_time > 4.0:
-        logger.warning(f"Slow request: {log_msg}")
-    else:
-        logger.info(log_msg)
+        logger.warning(logmsg)
 
-    return Response(content=final_buffer.getvalue(), media_type="audio/wav")
+    else:
+        logger.info(logmsg)
+
+    return Response(content=temp_databytes.getvalue(), media_type="audio/wav")
 
 
 @app.get("/tts-voices")
