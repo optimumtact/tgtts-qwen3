@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import logging
@@ -5,11 +6,17 @@ import os
 import time
 from typing import *
 
-from huggingface_hub import snapshot_download
+import numpy as np
+import soundfile as sf
 import torch
-from flask import jsonify
-from pydub import AudioSegment
-from pydub.silence import detect_leading_silence
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
+from huggingface_hub import snapshot_download
+from nanovllm_voxcpm import VoxCPM
+from nanovllm_voxcpm.models.voxcpm2.config import LoRAConfig
+from nanovllm_voxcpm.models.voxcpm2.server import AsyncVoxCPM2ServerPool
+from pydub import AudioSegment, effects
+from tqdm.asyncio import tqdm
 
 # Configure logging
 logging.basicConfig(
@@ -17,29 +24,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("tts.service")
 
-from torchaudio._extension.utils import _init_dll_path
+# --- Model Infrastructure ---
 
-_init_dll_path()  # I LOVE PYTORCH I LOVE PYTORCH I LOVE PYTORCH FUCKING TORCHAUDIO SUCKS ASS
-import asyncio
-import io
-import json
-import os
-import random
-import re
-import threading
-import time
-
-import librosa
-import numpy as np
-import soundfile as sf
-import torch
-import torchaudio
-from flask import Flask, request, send_file
-from pydub import AudioSegment, effects
-from tqdm import tqdm
-from nanovllm_voxcpm import VoxCPM
-from nanovllm_voxcpm.models.voxcpm2.server import SyncVoxCPM2ServerPool, AsyncVoxCPM2ServerPool, AsyncVoxCPM2Server
-from nanovllm_voxcpm.models.voxcpm2.config import LoRAConfig
 
 class TGAsyncPool(AsyncVoxCPM2ServerPool):
     async def generate(
@@ -55,7 +41,11 @@ class TGAsyncPool(AsyncVoxCPM2ServerPool):
     ):
         if prompt_id is not None:
             if prompt_id not in self._prompt_pool:
-                self._prompt_pool[prompt_id] = torch.load("./speaker_latents/" + prompt_id + ".speaker_latent", weights_only=False)
+                # Note: Keeping the synchronous load here as it's usually fast,
+                # but in high-scale it could be moved to an async executor.
+                self._prompt_pool[prompt_id] = torch.load(
+                    f"./speaker_latents/{prompt_id}.speaker_latent", weights_only=False
+                )
 
             prompt_info = self._prompt_pool[prompt_id]
             prompt_latents = prompt_info["latents"]
@@ -79,41 +69,10 @@ class TGAsyncPool(AsyncVoxCPM2ServerPool):
         finally:
             self.servers_load[min_load_server_idx] -= 1
 
-class TGServerPool(SyncVoxCPM2ServerPool):
-    def __init__(
-        self,
-        model_path: str,
-        inference_timesteps: int = 10,
-        max_num_batched_tokens: int = 16384,
-        max_num_seqs: int = 512,
-        max_model_len: int = 4096,
-        gpu_memory_utilization: float = 0.9,
-        enforce_eager: bool = False,
-        devices: List[int] = [],
-        lora_config: Optional[LoRAConfig] = None,
-        **kwargs,
-    ):
-        async def init_async_server_pool():
-            return TGAsyncPool(
-                model_path=model_path,
-                inference_timesteps=inference_timesteps,
-                max_num_batched_tokens=max_num_batched_tokens,
-                max_num_seqs=max_num_seqs,
-                max_model_len=max_model_len,
-                gpu_memory_utilization=gpu_memory_utilization,
-                enforce_eager=enforce_eager,
-                devices=devices,
-                lora_config=lora_config,
-                **kwargs,
-            )
 
-        self.loop = asyncio.new_event_loop()
-        self.server_pool = self.loop.run_until_complete(init_async_server_pool())
-        self.loop.run_until_complete(self.server_pool.wait_for_ready())
-
-class VoxCPM2_tg(VoxCPM):
+class VoxCPM2_tg_Async:
     @staticmethod
-    def from_pretrained(
+    async def from_pretrained(
         model: str,
         inference_timesteps: int = 10,
         max_num_batched_tokens: int = 16384,
@@ -127,28 +86,15 @@ class VoxCPM2_tg(VoxCPM):
     ):
         if "~" in model:
             model_path = os.path.expanduser(model)
-            if not os.path.isdir(model_path):
-                raise ValueError(f"Model path {model_path} does not exist")
         else:
-            if not os.path.isdir(model):
-                model_path = snapshot_download(repo_id=model)
-            else:
-                model_path = model
-
-        config_file = os.path.expanduser(os.path.join(model_path, "config.json"))
-
-        if not os.path.isfile(config_file):
-            raise FileNotFoundError(f"Config file `{config_file}` not found")
-
-        config = json.load(open(config_file))
-
-        arch = config["architecture"]
+            model_path = (
+                model if os.path.isdir(model) else snapshot_download(repo_id=model)
+            )
 
         if len(devices) == 0:
             devices = [0]
 
-        sync_server_pool_cls = TGServerPool
-        return sync_server_pool_cls(
+        pool = TGAsyncPool(
             model_path=model_path,
             inference_timesteps=inference_timesteps,
             max_num_batched_tokens=max_num_batched_tokens,
@@ -160,32 +106,20 @@ class VoxCPM2_tg(VoxCPM):
             lora_config=lora_config,
             **kwargs,
         )
+        await pool.wait_for_ready()
+        return pool
 
 
+# --- App Setup ---
 
-import io
-
-
-tts_lock = threading.Lock()
+app = FastAPI()
+model = None  # Global model instance
 voice_name_mapping = {}
-use_voice_name_mapping = True
-with open("./voice_mapping.json", "r") as file:
-    voice_name_mapping = json.load(file)
-    print("loaded voice mappings")
-    if len(voice_name_mapping) == 0:
-        use_voice_name_mapping = False
-print("voice mappings to use: " + ", ".join(list(voice_name_mapping.values())))
-app = Flask(__name__)
+use_voice_name_mapping = False
 letters_to_use = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
-random_factor = 0.35
-os.makedirs("samples", exist_ok=True)
-trim_leading_silence = lambda x: x[detect_leading_silence(x) :]
-trim_trailing_silence = lambda x: trim_leading_silence(x.reverse()).reverse()
-strip_silence = lambda x: trim_trailing_silence(trim_leading_silence(x))
-
-global request_count
 
 
+# Audio Utility Functions
 def normalize_to_target(seg, target_dbfs=-20.0):
     change = target_dbfs - seg.dBFS
     return seg.apply_gain(change)
@@ -193,150 +127,139 @@ def normalize_to_target(seg, target_dbfs=-20.0):
 
 def cap_loudness(seg, max_dbfs=-1.0):
     if seg.max_dBFS > max_dbfs:
-        change = max_dbfs - seg.max_dBFS
-        return seg.apply_gain(change)
+        return seg.apply_gain(max_dbfs - seg.max_dBFS)
     return seg
 
 
-@app.route("/generate-tts")
-def text_to_speech():
-    text = request.json.get("text", "")
-    voice = request.json.get("voice", "")
-    request_start_time = time.time()
-    logger.debug(f"Endpoint: /generate-tts | Voice: {voice} | Text: {text[:50]}...")
-    result = None
-    actual_text_found = False
-    audio_duration = 0
-    tts_duration = 0
-    lava_duration = 0
-    normalize_duration = 0
-    with tts_lock:
-        with io.BytesIO() as data_bytes:
-            for i, letter in enumerate(text):
-                if letter in letters_to_use:
-                    actual_text_found = True
-                    break
-            if not actual_text_found:
-                logger.debug(
-                    "No alphanumeric characters found in text, returning stub file."
-                )
-                stub_file = AudioSegment.empty()
-                stub_file.set_frame_rate(48000)
-                stub_file.export(data_bytes, format="wav")
-                result = send_file(
-                    io.BytesIO(data_bytes.getvalue()), mimetype="audio/wav"
-                )
-                return result
-            with torch.inference_mode():
-                final_letter = text[-1]
-                acceptable_punctuation = [".", "?", "!"]
-                if not final_letter in acceptable_punctuation:
-                    text += ". "
-                if (
-                    text and text[0].isalpha() and not text[0].isupper()
-                ):  # capitalize that shit if they forgot
-                    text = text[0].upper() + text[1:]
+@app.on_event("startup")
+async def startup_event():
+    global model, voice_name_mapping, use_voice_name_mapping
 
-                # Inference
-                gen_start = time.time()
-                chunks = [chunk for chunk in model.generate(target_text=text, prompt_id = voice_name_mapping[voice], max_generate_length = 256)]
-                wav = np.concatenate(chunks, axis=0)
-                tts_databytes = io.BytesIO()
-                sf.write(tts_databytes, wav, 48000, format="wav")
-                gen_end = time.time()
-                tts_duration = gen_end - gen_start
-                normalise_start = time.time()
-                rawsound = AudioSegment.from_file(
-                    io.BytesIO(tts_databytes.getvalue()), "wav"
-                )
-                temp_databytes = io.BytesIO()
-                normalizedsound = normalize_to_target(rawsound, -25)
-                normalizedsound = cap_loudness(normalizedsound, max_dbfs=-5)
-                normalizedsound = effects.normalize(rawsound)
-                normalizedsound.export(temp_databytes, format="wav")
-                normalised_end = time.time()
-                normalize_duration = normalised_end - normalise_start
-                result = send_file(
-                    io.BytesIO(temp_databytes.getvalue()), mimetype="audio/wav"
-                )
-                audio_duration = len(normalizedsound) / 1000
+    # Load voice mappings
+    if os.path.exists("./voice_mapping.json"):
+        with open("./voice_mapping.json", "r") as file:
+            voice_name_mapping = json.load(file)
+            use_voice_name_mapping = len(voice_name_mapping) > 0
 
-        totaltime = time.time() - request_start_time
-        if totaltime > 4.0:
-            logger.warning(
-                f"Slow request detected. Total time: {totaltime:.4f}s | Voice: {voice} | Text: {text} | Audio Duration: {audio_duration:.2f}s | TTS Time: {tts_duration:.4f}s | Normalization Time: {normalize_duration:.4f}s"
-            )
-
-        else:
-            logger.info(
-                f"Request complete Total time: {totaltime:.4f}s | Voice: {voice} | Text: {text} | Audio Duration: {audio_duration:.2f}s | TTS Time: {tts_duration:.4f}s | Normalization Time: {normalize_duration:.4f}s"
-            )
-        return result
-
-
-@app.route("/tts-voices")
-def voices_list():
-    if use_voice_name_mapping:
-        data = list(voice_name_mapping.keys())
-        data.sort()
-        return jsonify(data)
-
-
-@app.route("/health-check")
-def tts_health_check():
-    return f"OK: 1", 200
-
-
-@app.route("/toggle-logging")
-def toggle_logging():
-    level_str = request.args.get("level", "").upper()
-    if level_str:
-        try:
-            logger.setLevel(level_str)
-        except (ValueError, TypeError):
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": f"Invalid logging level: {level_str}",
-                    }
-                ),
-                400,
-            )
-    else:
-        current_level = logger.getEffectiveLevel()
-        new_level = logging.DEBUG if current_level == logging.INFO else logging.INFO
-        logger.setLevel(new_level)
-
-    level_name = logging.getLevelName(logger.getEffectiveLevel())
-    return jsonify({"status": "success", "new_level": level_name})
-
-
-if __name__ == "__main__":
-    from waitress import serve
-    print("I: Loading Qwen3-TTS and LavaSR into memory...")
-    model = VoxCPM2_tg.from_pretrained(
+    logger.info("Loading VoxCPM2 into memory...")
+    model = await VoxCPM2_tg_Async.from_pretrained(
         "openbmb/VoxCPM2",
         devices=[0],
         max_num_batched_tokens=8192,
         max_num_seqs=16,
         gpu_memory_utilization=0.95,
     )
-    print("Done loading.")
-    print("Beginning voice caching")
-    first_latent = None
-    for k, v in tqdm(voice_name_mapping.items()):
-        if not first_latent:
-            first_latent = v
-            break
-    print("Warming model up...")
-    with tts_lock:
-        trash = io.BytesIO()
-        chunks = [chunk for chunk in model.generate(target_text="The quick brown fox jumps over the lazy dog.", prompt_id = first_latent, max_generate_length = 256)]
-        wav = np.concatenate(chunks, axis=0)
-        sf.write(trash, wav, 48000, format="wav")
-        del trash
-    print("Serving TTS on :5003")
-    serve(app, host="0.0.0.0", port=5003, backlog=32, channel_timeout=8)
-    print("Closing server...")
-    model.stop()
+    logger.info("Model Loaded.")
+
+
+# --- API Endpoints ---
+
+
+@app.get("/generate-tts")  # Support both for compatibility
+async def text_to_speech(request: Request):
+    # Parse json body
+    body = await request.json()
+
+    text = body.get("text", "")
+    voice = body.get("voice", "")
+    request_start_time = time.time()
+    logger.debug(f"Endpoint: /generate-tts | Voice: {voice} | Text: {text[:50]}...")
+
+    # Check for actual content
+    if not any(letter in letters_to_use for letter in text):
+        stub = AudioSegment.empty().set_frame_rate(48000)
+        buffer = io.BytesIO()
+        stub.export(buffer, format="wav")
+        return Response(content=buffer.getvalue(), media_type="audio/wav")
+
+    # Sanitize text
+    if text and text[-1] not in [".", "?", "!"]:
+        text += ". "
+    if text and text[0].isalpha() and not text[0].isupper():
+        text = text[0].upper() + text[1:]
+
+    # Inference (No Lock needed - Nano-vLLM handles it)
+    gen_start = time.time()
+    chunks = []
+    async for chunk in model.generate(
+        target_text=text,
+        prompt_id=voice_name_mapping.get(voice),
+        max_generate_length=256,
+    ):
+        chunks.append(chunk)
+
+    wav_data = np.concatenate(chunks, axis=0)
+    tts_duration = time.time() - gen_start
+
+    # Post-processing
+    norm_start = time.time()
+    # Convert numpy to WAV bytes for Pydub
+    proc_buffer = io.BytesIO()
+    sf.write(proc_buffer, wav_data, 48000, format="wav")
+    proc_buffer.seek(0)
+
+    raw_sound = AudioSegment.from_file(proc_buffer, "wav")
+    normalized = normalize_to_target(raw_sound, -25)
+    normalized = cap_loudness(normalized, max_dbfs=-5)
+    normalized = effects.normalize(normalized)
+
+    final_buffer = io.BytesIO()
+    normalized.export(final_buffer, format="wav")
+    normalize_duration = time.time() - norm_start
+
+    total_time = time.time() - request_start_time
+    audio_dur = len(normalized) / 1000
+
+    log_msg = f"Request complete: Total {total_time:.4f}s | Audio {audio_dur:.2f}s | TTS {tts_duration:.4f}s"
+    if total_time > 4.0:
+        logger.warning(f"Slow request: {log_msg}")
+    else:
+        logger.info(log_msg)
+
+    return Response(content=final_buffer.getvalue(), media_type="audio/wav")
+
+
+@app.get("/tts-voices")
+async def voices_list():
+    if use_voice_name_mapping:
+        data = sorted(list(voice_name_mapping.keys()))
+        return JSONResponse(content=data)
+    return JSONResponse(content=[])
+
+
+@app.get("/health-check")
+async def tts_health_check():
+    return Response(content="OK: 1", status_code=200)
+
+
+@app.get("/toggle-logging")
+async def toggle_logging(level: str = None):
+    if level:
+        try:
+            logger.setLevel(level.upper())
+        except (ValueError, TypeError):
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": f"Invalid level: {level}"},
+            )
+    else:
+        new_level = (
+            logging.DEBUG
+            if logger.getEffectiveLevel() == logging.INFO
+            else logging.INFO
+        )
+        logger.setLevel(new_level)
+
+    return JSONResponse(
+        {
+            "status": "success",
+            "new_level": logging.getLevelName(logger.getEffectiveLevel()),
+        }
+    )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # Use uvicorn instead of Waitress
+    uvicorn.run(app, host="0.0.0.0", port=5003, log_level="info")
