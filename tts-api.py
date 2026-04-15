@@ -612,10 +612,15 @@ def text_to_speech_radio():
     identifier = request.args.get("identifier", "")
     raw_text = request.json.get("raw_text", "")
     gibberish_text = request.json.get("gibberish_text", "")
-
+    request_url = "http://haproxy:5005/radio"
+    if gibberish_text != "":
+        logger.info(
+            f"ID: {identifier} | Sending to the Gibberish endpoint."
+        )
+        request_url = "http://haproxy:5006/radio-gibberish"
     req_start = time.time()
     response = requests.get(
-        "http://haproxy:5005/radio",
+        request_url,
         json={"identifier": identifier, "folder": "radio", "raw_text": raw_text, "gibberish_text": gibberish_text},
     )
 

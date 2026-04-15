@@ -7,6 +7,8 @@ services:
       - tts1
       - api1
       - blips
+      - radio
+      - radio-gibberish
     ports:
       - 5002:5002
       - 8888:8888
@@ -72,6 +74,13 @@ services:
   radio:
     build: .
     command: python -u tg_tts_service_radio.py
+    networks:
+      - default
+    volumes:
+      - ./cache:/workspace/cache:rw
+  radio-gibberish:
+    build: .
+    command: python -u tg_tts_service_radio_gibberish.py
     networks:
       - default
     volumes:
