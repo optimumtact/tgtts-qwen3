@@ -373,6 +373,11 @@ def radio_handler():
     logger.info(f"ID: {identifier} | Radio gibberish effect generation time: {time.time() - start_time:.4f}s")
     return result
 
+@app.route("/health-check")
+def tts_health_check():
+    return "OK", 200
+
+
 if __name__ == "__main__":
     from waitress import serve
     print("Warming up...")
