@@ -124,7 +124,18 @@ def tts_stats(voice, total_time):
 def get_voices():
     query = "SELECT count(*) as count, voice_used FROM tts_logs GROUP BY voice_used"
     params = []
-
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+    if start_date or end_date:
+        query += " WHERE "
+        if start_date:
+            query += "timestamp >= ?"
+            params.append(start_date)
+        if end_date:
+            if start_date:
+                query += " AND "
+            query += "timestamp <= ?"
+            params.append(end_date)
     conn = get_db_connection()
     voices = conn.execute(query, params).fetchall()
     conn.close()
