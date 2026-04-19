@@ -124,8 +124,8 @@ def tts_stats(voice, total_time):
 
 @app.route("/api/voices")
 def get_voices():
-    query = "SELECT count(*) as count, voice_used FROM tts_logs GROUP BY voice_used"
     params = []
+    query = ""
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
     if start_date or end_date:
@@ -138,12 +138,26 @@ def get_voices():
                 query += " AND "
             query += "timestamp <= ?"
             params.append(end_date)
+    final_query = f"SELECT * FROM tts_logs {query}"
     conn = get_db_connection()
-    voices = conn.execute(query, params).fetchall()
+    df = pd.read_sql_query(final_query, conn, params=params)
     conn.close()
-    return jsonify(
-        [{"voice": voice["voice_used"], "count": voice["count"]} for voice in voices]
+    # Per-voice aggregation
+    voice_stats = (
+        df.groupby("voice_used")["audio_duration"]
+        .agg(count="count", p95=lambda x: x.quantile(0.95))
+        .reset_index()
     )
+
+    # Global stats
+    global_stats = {
+        "count": len(df),
+        "q3": df["audio_duration"].quantile(0.75),
+        "q1": df["audio_duration"].quantile(0.25),
+    }
+    voices = voice_stats.to_dict(orient="records")
+    result = {"global": global_stats, "voices": voice_stats.to_dict(orient="records")}
+    return jsonify(result)
 
 
 @app.route("/api/ttsstats")
@@ -158,17 +172,19 @@ def get_tts_stats():
 
     query = "SELECT * FROM tts_logs"
     params = []
-    conditions = []
 
-    if start_date:
-        conditions.append("timestamp >= ?")
-        params.append(start_date)
-    if end_date:
-        conditions.append("timestamp <= ?")
-        params.append(end_date)
-
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+    if start_date or end_date:
+        query += " WHERE "
+        if start_date:
+            query += "timestamp >= ?"
+            params.append(start_date)
+        if end_date:
+            if start_date:
+                query += " AND "
+            query += "timestamp <= ?"
+            params.append(end_date)
 
     conn = get_db_connection()
     df = pd.read_sql_query(query, conn, params=params)
@@ -178,14 +194,11 @@ def get_tts_stats():
         return jsonify([])
 
     results = []
-    # If no voices provided, use all unique voices from data
-    voices_to_process = voices if voices else df["voice_used"].unique()
-    print(voices_to_process)
-
+    # If no voices provided, they'll just get the global voice
     # first the global corpus result set
     results.append(tts_stats("global", df["total_time"]))
 
-    for voice in voices_to_process:
+    for voice in voices:
         voice_df = df[df["voice_used"] == voice]
         if voice_df.empty:
             continue
