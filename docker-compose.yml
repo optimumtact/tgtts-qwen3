@@ -9,6 +9,7 @@ services:
       - blips
       - radio
       - radio-gibberish
+      - tts-dashboard
     ports:
       - 5002:5002
       - 8888:8888
@@ -40,10 +41,12 @@ services:
       - ./speaker_latents:/workspace/speaker_latents:rw
       - ./voice_mapping.json:/workspace/voice_mapping.json:rw
       - ./huggingfacecache:/root/.cache/huggingface:rw
+      - ${PWD}/db:/workspace/db
     environment:
       - TORCH_USE_CUDA_DSA=1
       - TORCH_CUDNN_SDPA_ENABLED=1
       - TORCH_LOG=perf_hints
+      - DB_PATH=/workspace/db/tts_stats.db
     deploy:
       resources:
         reservations:
@@ -51,6 +54,17 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+  tts-dashboard:
+    build: .
+    command: python -u tts_dashboard.py
+    networks:
+      - default
+    volumes:
+      - ${PWD}/db:/workspace/db
+    environment:
+      - DB_PATH=/workspace/db/tts_stats.db
+    ports:
+      - 5007:5007
   blips:
     build: .
     command: python -u tg_tts_service_blips_new.py

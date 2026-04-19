@@ -3,13 +3,14 @@ import io
 import json
 import logging
 import os
+import sqlite3
 import time
 from typing import *
 
 import numpy as np
 import soundfile as sf
 import torch
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from huggingface_hub import snapshot_download
 from nanovllm_voxcpm import VoxCPM
@@ -23,6 +24,56 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("tts.service")
+
+DB_PATH = os.getenv("DB_PATH", "/workspace/tts_stats.db")
+
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tts_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            total_time REAL,
+            voice_used TEXT,
+            text_used TEXT,
+            audio_duration REAL,
+            tts_time REAL,
+            normalization_time REAL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def log_to_db(
+    total_time, voice, text, audio_duration, tts_time, normalization_time
+):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO tts_logs (total_time, voice_used, text_used, audio_duration, tts_time, normalization_time)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                total_time,
+                voice,
+                text,
+                audio_duration,
+                tts_time,
+                normalization_time,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to log to SQLite: {e}")
+
 
 # --- Model Infrastructure ---
 
@@ -135,6 +186,8 @@ def cap_loudness(seg, max_dbfs=-1.0):
 async def startup_event():
     global model, voice_name_mapping, use_voice_name_mapping
 
+    init_db()
+
     # Load voice mappings
     if os.path.exists("./voice_mapping.json"):
         with open("./voice_mapping.json", "r") as file:
@@ -156,7 +209,7 @@ async def startup_event():
 
 
 @app.get("/generate-tts")  # Support both for compatibility
-async def text_to_speech(request: Request):
+async def text_to_speech(request: Request, background_tasks: BackgroundTasks):
     # Parse json body
     body = await request.json()
 
@@ -206,6 +259,15 @@ async def text_to_speech(request: Request):
     normalize_duration = normalised_end - normalise_start
     audio_duration = len(normalizedsound) / 1000
     total_time = time.time() - request_start_time
+    background_tasks.add_task(
+        log_to_db,
+        total_time,
+        voice,
+        text,
+        audio_duration,
+        tts_duration,
+        normalize_duration,
+    )
     logmsg = f"Slow request detected. Total time: {total_time:.4f}s | Voice: {voice} | Text: {text} | Audio Duration: {audio_duration:.2f}s | TTS Time: {tts_duration:.4f}s | Normalization Time: {normalize_duration:.4f}s"
     if total_time > 4.0:
         logger.warning(logmsg)
