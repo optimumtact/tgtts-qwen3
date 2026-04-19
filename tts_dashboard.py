@@ -144,7 +144,7 @@ def get_voices():
     conn.close()
     # Per-voice aggregation
     voice_stats = (
-        df.groupby("voice_used")["audio_duration"]
+        df.groupby("voice_used")["total_time"]
         .agg(count="count", p95=lambda x: x.quantile(0.95))
         .reset_index()
     )
@@ -152,10 +152,9 @@ def get_voices():
     # Global stats
     global_stats = {
         "count": len(df),
-        "q3": df["audio_duration"].quantile(0.75),
-        "q1": df["audio_duration"].quantile(0.25),
+        "q3": df["total_time"].quantile(0.75),
+        "q1": df["total_time"].quantile(0.25),
     }
-    voices = voice_stats.to_dict(orient="records")
     result = {"global": global_stats, "voices": voice_stats.to_dict(orient="records")}
     return jsonify(result)
 

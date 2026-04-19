@@ -47,17 +47,16 @@ async function fetchData() {
 
     try {
         if (currentPage === 'latency') {
-            // 1. Fetch voices to populate sidebar
-            const vResponse = await fetch('/api/voices?' + params.toString());
-            const vData = await vResponse.json();
-
-            // 2. Fetch stats for selected voices (or all if none specified yet)
+            // Fetch voices (for sidebar labels) and stats (for chart KDEs) in parallel
+            const vPromise = fetch('/api/voices?' + params.toString()).then(r => r.json());
+            
             let statsParams = new URLSearchParams(params);
             if (activeVoices.length > 0) {
                 statsParams.append('voices', activeVoices.join(','));
             }
-            const sResponse = await fetch('/api/ttsstats?' + statsParams.toString());
-            const statsData = await sResponse.json();
+            const sPromise = fetch('/api/ttsstats?' + statsParams.toString()).then(r => r.json());
+
+            const [vData, statsData] = await Promise.all([vPromise, sPromise]);
 
             processData(statsData, vData);
             renderVoiceList();
@@ -90,10 +89,22 @@ async function fetchData() {
 }
 
 function processData(statsData, vData) {
-    availableVoices = vData;
+    const vGlobal = vData.global;
+    
+    // Process available voices with labels from the optimized voices endpoint
+    availableVoices = vData.voices.map(v => ({
+        voice: v.voice_used,
+        count: v.count,
+        p95: v.p95,
+        is_slow: vGlobal.q3 ? v.p95 >= vGlobal.q3 : false,
+        is_fast: vGlobal.q1 ? v.p95 <= vGlobal.q1 : false,
+        is_insignificant: v.count < 20
+    }));
+
     voiceStats = [];
     globalStats = {};
 
+    // Process detailed stats for the selected voices (and global) for the chart
     statsData.forEach(res => {
         const stats = {
             voice: res.voice,
@@ -105,19 +116,6 @@ function processData(statsData, vData) {
             globalStats = stats;
         } else {
             voiceStats.push(stats);
-        }
-    });
-
-    // Merge stats into availableVoices for the sidebar list metadata
-    availableVoices.forEach(v => {
-        const s = voiceStats.find(s => s.voice === v.voice);
-        if (s) {
-            v.p95 = s.p95;
-            v.is_slow = globalStats.q3 ? s.p95 >= globalStats.q3 : false;
-            v.is_fast = globalStats.q1 ? s.p95 <= globalStats.q1 : false;
-            v.is_insignificant = s.count < 20;
-        } else {
-            v.is_insignificant = v.count < 20;
         }
     });
     
