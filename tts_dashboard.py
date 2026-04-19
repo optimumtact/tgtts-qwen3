@@ -11,6 +11,8 @@ DB_PATH = os.getenv("DB_PATH", "/workspace/tts_stats.db")
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=OFF")
     return conn
 
 
@@ -75,6 +77,7 @@ HTML_TEMPLATE = """
         .badge { margin-left: auto; font-size: 10px; padding: 2px 6px; border-radius: 10px; font-weight: bold; }
         .slow-badge { background: #fee2e2; color: #b91c1c; }
         .fast-badge { background: #dcfce7; color: #15803d; }
+        .orange-badge { background: #ffedd5; color: #9a3412; }
         
         .violin { stroke: #333; stroke-width: 0.5; opacity: 0.6; cursor: pointer; }
         .range-line { stroke: #333; stroke-width: 1.5; opacity: 0.3; }
@@ -124,6 +127,7 @@ HTML_TEMPLATE = """
                 <h3>Visual Key & Methodology</h3>
                 <div class="key-grid">
                     <div class="key-item"><div class="key-box" style="background: #9b59b6;"></div> Global Corpus</div>
+                    <div class="key-item"><div class="key-box" style="background: #ffa500;"></div> Insignificant (< 20 samples)</div>
                     <div class="key-item"><div class="key-box" style="background: #e74c3c;"></div> High P95 (Unstable/Slow)</div>
                     <div class="key-item"><div class="key-box" style="background: #2ecc71;"></div> Low P95 (Fast/Consistent)</div>
                     <div class="key-item"><div class="key-box" style="background: #3498db;"></div> Standard Range</div>
@@ -199,7 +203,8 @@ HTML_TEMPLATE = """
                     count: times.length,
                     is_slow: !isGlobal && p95 >= globalQ3,
                     is_fast: !isGlobal && p95 <= globalQ1,
-                    is_global: isGlobal
+                    is_global: isGlobal,
+                    is_insignificant: !isGlobal && times.length < 20
                 };
             }
 
@@ -216,7 +221,8 @@ HTML_TEMPLATE = """
             voiceStats.forEach(d => {
                 const isChecked = activeVoices.includes(d.voice);
                 const item = list.append("div").attr("class", "voice-item")
-                    .style("display", d.voice.toLowerCase().includes(term) ? "flex" : "none");
+                    .style("display", d.voice.toLowerCase().includes(term) ? "flex" : "none")
+                    .style("background", d.is_insignificant ? "#fff7ed" : "transparent");
                 
                 item.append("input").attr("type", "checkbox").attr("class", "voice-checkbox")
                     .property("checked", isChecked)
@@ -229,9 +235,10 @@ HTML_TEMPLATE = """
                         renderChart();
                     });
                 
-                item.append("span").attr("class", "v-name").text(d.voice);
+                item.append("span").attr("class", "v-name").text(`${d.voice} (${d.count})`);
                 item.append("span").attr("class", "v-meta").text(`p95: ${d.p95.toFixed(2)}s`);
                 
+                if(d.is_insignificant) item.append("span").attr("class", "badge orange-badge").text("LOW SAMPLES");
                 if(d.is_slow) item.append("span").attr("class", "badge slow-badge").text("SLOW");
                 if(d.is_fast) item.append("span").attr("class", "badge fast-badge").text("FAST");
             });
@@ -240,8 +247,9 @@ HTML_TEMPLATE = """
         function filterVoices() {
             const term = document.getElementById('search-bar').value.toLowerCase();
             d3.selectAll(".voice-item").each(function() {
-                const name = d3.select(this).select(".v-name").text().toLowerCase();
-                d3.select(this).style("display", name.includes(term) ? "flex" : "none");
+                const nameText = d3.select(this).select(".v-name").text().toLowerCase();
+                const nameMatch = nameText.split(' (')[0].includes(term); // Only match voice name part
+                d3.select(this).style("display", nameMatch ? "flex" : "none");
             });
         }
 
@@ -305,7 +313,7 @@ HTML_TEMPLATE = """
                 const xPos = x(d.voice);
                 const maxNum = d3.max(density, v => v[1]);
                 const xNum = d3.scaleLinear().range([0, violinWidth / 2]).domain([0, maxNum]);
-                const color = d.is_global ? "#9b59b6" : (d.is_slow ? "#e74c3c" : (d.is_fast ? "#2ecc71" : "#3498db"));
+                const color = d.is_global ? "#9b59b6" : (d.is_insignificant ? "#ffa500" : (d.is_slow ? "#e74c3c" : (d.is_fast ? "#2ecc71" : "#3498db")));
 
                 svg.append("line").attr("class", "range-line").attr("x1", xPos).attr("x2", xPos).attr("y1", y(d.min)).attr("y2", y(d.max));
                 const capW = 6;

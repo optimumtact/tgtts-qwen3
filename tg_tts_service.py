@@ -30,6 +30,8 @@ DB_PATH = os.getenv("DB_PATH", "/workspace/tts_stats.db")
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=OFF")
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -54,6 +56,8 @@ def log_to_db(
 ):
     try:
         conn = sqlite3.connect(DB_PATH)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=OFF")
         cursor = conn.cursor()
         cursor.execute(
             """
