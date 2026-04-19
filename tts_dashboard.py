@@ -102,6 +102,7 @@ def tts_stats(voice, total_time):
         "max": float(total_time.max()),
         "median": float(total_time.median()),
         "p95": float(total_time.quantile(0.95)),
+        "count": int(total_time.count()),
     }
 
     # Kernel Density Estimate (100 points)
@@ -117,6 +118,19 @@ def tts_stats(voice, total_time):
         stats["kde"] = None
 
     return {"voice": voice, "data": stats}
+
+
+@app.route("/api/voices")
+def get_voices():
+    query = "SELECT count(*) as count, voice_used FROM tts_logs GROUP BY voice_used"
+    params = []
+
+    conn = get_db_connection()
+    voices = conn.execute(query, params).fetchall()
+    conn.close()
+    return jsonify(
+        [{"voice": voice["voice_used"], "count": voice["count"]} for voice in voices]
+    )
 
 
 @app.route("/api/ttsstats")
