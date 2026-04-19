@@ -2,8 +2,10 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 
+import numpy as np
 import pandas as pd
 from flask import Flask, jsonify, render_template_string, request
+from scipy.stats import gaussian_kde
 
 app = Flask(__name__)
 DB_PATH = os.getenv("DB_PATH", "/workspace/tts_stats.db")
@@ -94,6 +96,76 @@ def get_stats():
 
     data = [dict(log) for log in logs]
     return jsonify(data)
+
+
+@app.route("/api/ttsstats")
+def get_tts_stats():
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+    voices = request.args.getlist("voices")
+
+    # Handle both list and comma-separated string
+    if voices and len(voices) == 1 and "," in voices[0]:
+        voices = voices[0].split(",")
+
+    query = "SELECT * FROM tts_logs"
+    params = []
+    conditions = []
+
+    if start_date:
+        conditions.append("timestamp >= ?")
+        params.append(start_date)
+    if end_date:
+        conditions.append("timestamp <= ?")
+        params.append(end_date)
+    if voices:
+        placeholders = ",".join(["?"] * len(voices))
+        conditions.append(f"voice_used IN ({placeholders})")
+        params.extend(voices)
+
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+
+    conn = get_db_connection()
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+
+    if df.empty:
+        return jsonify([])
+
+    results = []
+    # If no voices provided, use all unique voices from data
+    voices_to_process = voices if voices else df["voice_used"].unique()
+
+    for voice in voices_to_process:
+        voice_df = df[df["voice_used"] == voice]
+        if voice_df.empty:
+            continue
+
+        total_time = voice_df["total_time"]
+
+        stats = {
+            "min": float(total_time.min()),
+            "max": float(total_time.max()),
+            "median": float(total_time.median()),
+            "p95": float(total_time.quantile(0.95)),
+        }
+
+        # Kernel Density Estimate (100 points)
+        if len(total_time) > 1 and total_time.std() > 0:
+            try:
+                kde = gaussian_kde(total_time)
+                x_ind = np.linspace(total_time.min(), total_time.max(), 100)
+                y_val = kde.evaluate(x_ind)
+                stats["kde"] = {"x": x_ind.tolist(), "y": y_val.tolist()}
+            except Exception:
+                stats["kde"] = None
+        else:
+            stats["kde"] = None
+
+        results.append({"voice": voice, "data": stats})
+
+    return jsonify(results)
 
 
 @app.route("/")
