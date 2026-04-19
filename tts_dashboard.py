@@ -69,33 +69,6 @@ def get_latency():
     return jsonify(data)
 
 
-@app.route("/api/stats")
-def get_stats():
-    start_date = request.args.get("start_date")
-    end_date = request.args.get("end_date")
-
-    query = "SELECT * FROM tts_logs"
-    params = []
-
-    if start_date or end_date:
-        query += " WHERE "
-        if start_date:
-            query += "timestamp >= ?"
-            params.append(start_date)
-        if end_date:
-            if start_date:
-                query += " AND "
-            query += "timestamp <= ?"
-            params.append(end_date)
-
-    conn = get_db_connection()
-    logs = conn.execute(query, params).fetchall()
-    conn.close()
-
-    data = [dict(log) for log in logs]
-    return jsonify(data)
-
-
 def tts_stats(voice, total_time):
     stats = {
         "min": float(total_time.min()),
