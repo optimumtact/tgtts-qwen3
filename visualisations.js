@@ -185,18 +185,46 @@ function renderTrafficCharts(data) {
         .attr("fill-opacity", 0.15)
         .attr("d", area);
 
-    // Median Latency Line
+    // Median, Mean, and P95 Latency Lines
     const lineMedian = d3.line()
         .x(d => x(d.date))
         .y(d => yLat(d.median))
         .curve(d3.curveMonotoneX);
 
+    const lineMean = d3.line()
+        .x(d => x(d.date))
+        .y(d => yLat(d.mean))
+        .curve(d3.curveMonotoneX);
+
+    const lineP95 = d3.line()
+        .x(d => x(d.date))
+        .y(d => yLat(d.p95))
+        .curve(d3.curveMonotoneX);
+
+    // Median Line (Blue)
     svg.append("path")
         .datum(data)
         .attr("fill", "none")
         .attr("stroke", "#3498db")
         .attr("stroke-width", 2)
         .attr("d", lineMedian);
+
+    // Mean Line (Green, Dashed)
+    svg.append("path")
+        .datum(data)
+        .attr("fill", "none")
+        .attr("stroke", "#2ecc71")
+        .attr("stroke-width", 2)
+        .style("stroke-dasharray", ("4, 4"))
+        .attr("d", lineMean);
+
+    // P95 Line (Orange)
+    svg.append("path")
+        .datum(data)
+        .attr("fill", "none")
+        .attr("stroke", "#e67e22")
+        .attr("stroke-width", 2)
+        .attr("d", lineP95);
 
     // Request Count - Circle Plot (Scatter)
     svg.selectAll(".count-dot")
@@ -214,8 +242,9 @@ function renderTrafficCharts(data) {
                 <b style="color:#e74c3c">Time: ${d.date.toLocaleString()}</b><hr>
                 Requests: ${d.count}<br>
                 Median Latency: ${d.median.toFixed(3)}s<br>
-                Latency Range: ${d.min.toFixed(3)}s - ${d.max.toFixed(3)}s<br>
-                P95 Latency: ${d.p95.toFixed(3)}s
+                Mean Latency: ${d.mean.toFixed(3)}s<br>
+                P95 Latency: ${d.p95.toFixed(3)}s<br>
+                Latency Range: ${d.min.toFixed(3)}s - ${d.max.toFixed(3)}s
             `)
             .style("left", (event.pageX + 15) + "px").style("top", (event.pageY - 28) + "px");
         })
