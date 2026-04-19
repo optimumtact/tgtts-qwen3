@@ -155,7 +155,7 @@ function renderTrafficCharts(data) {
 
     // Left Y Axis: Latency (seconds)
     const yLat = d3.scaleLinear()
-        .domain([0, d3.max(data, d => d.max) * 1.1 || 1])
+        .domain([0, d3.max(data, d => d.p95) * 1.1 || 1])
         .range([height, 0]);
 
     // Right Y Axis: Request Count
@@ -172,11 +172,11 @@ function renderTrafficCharts(data) {
     svg.append("text").attr("transform", "rotate(-90)").attr("y", -margin.left + 15).attr("x", -height/2).attr("text-anchor", "middle").style("font-size", "12px").text("Latency (seconds)");
     svg.append("text").attr("transform", "rotate(-90)").attr("y", width + margin.right - 15).attr("x", -height/2).attr("text-anchor", "middle").style("font-size", "12px").text("Request Count");
 
-    // Filled Area for Min-Max Latency
+    // Filled Area for Min-p95 Latency
     const area = d3.area()
         .x(d => x(d.date))
         .y0(d => yLat(d.min))
-        .y1(d => yLat(d.max))
+        .y1(d => yLat(d.p95))
         .curve(d3.curveMonotoneX);
 
     svg.append("path")
@@ -196,10 +196,10 @@ function renderTrafficCharts(data) {
         .y(d => yLat(d.mean))
         .curve(d3.curveMonotoneX);
 
-    const lineP95 = d3.line()
-        .x(d => x(d.date))
-        .y(d => yLat(d.p95))
-        .curve(d3.curveMonotoneX);
+    // const lineP95 = d3.line()
+    //     .x(d => x(d.date))
+    //     .y(d => yLat(d.p95))
+    //     .curve(d3.curveMonotoneX);
 
     // Median Line (Blue)
     svg.append("path")
@@ -218,13 +218,13 @@ function renderTrafficCharts(data) {
         .style("stroke-dasharray", ("4, 4"))
         .attr("d", lineMean);
 
-    // P95 Line (Orange)
-    svg.append("path")
-        .datum(data)
-        .attr("fill", "none")
-        .attr("stroke", "#e67e22")
-        .attr("stroke-width", 2)
-        .attr("d", lineP95);
+    // // P95 Line (Orange)
+    // svg.append("path")
+    //     .datum(data)
+    //     .attr("fill", "none")
+    //     .attr("stroke", "#e67e22")
+    //     .attr("stroke-width", 2)
+    //     .attr("d", lineP95);
 
     // Request Count - Circle Plot (Scatter)
     svg.selectAll(".count-dot")
