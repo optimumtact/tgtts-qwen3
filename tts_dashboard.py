@@ -55,6 +55,7 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <title>TTS Latency Dashboard (Real-time)</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
     <style>
         body { font-family: -apple-system, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #fdfdfd; color: #333; }
         header { background: #232f3e; color: white; padding: 15px 25px; display: flex; justify-content: space-between; align-items: center; }
@@ -177,6 +178,7 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
+        const DateTime = luxon.DateTime;
         let rawData = [];
         let voiceStats = [];
         let globalStats = {};
@@ -194,15 +196,10 @@ HTML_TEMPLATE = """
         }
 
         function setRange(minutes) {
-            if (minutes === null) {
-                document.getElementById('start-date').value = '';
-                document.getElementById('end-date').value = '';
-            } else {
-                const now = new Date();
-                const start = new Date(now.getTime() - minutes * 60000);
-                document.getElementById('start-date').value = toISOStringLocal(start);
-                document.getElementById('end-date').value = toISOStringLocal(now);
-            }
+            const now = DateTime.now();
+            const start = now.minus({ minutes: minutes });
+            document.getElementById('start-date').value = start.toFormat("yyyy-MM-dd'T'HH:mm");
+            document.getElementById('end-date').value = now.toFormat("yyyy-MM-dd'T'HH:mm");
             fetchData();
         }
 
@@ -224,8 +221,8 @@ HTML_TEMPLATE = """
             
             let url = '/api/stats';
             const params = new URLSearchParams();
-            if (startDate) params.append('start_date', startDate.replace('T', ' '));
-            if (endDate) params.append('end_date', endDate.replace('T', ' '));
+            if (startDate) params.append('start_date', DateTime.fromISO(startDate).toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
+            if (endDate) params.append('end_date', DateTime.fromISO(endDate).toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
             if (params.toString()) url += '?' + params.toString();
 
             try {
@@ -537,16 +534,15 @@ HTML_TEMPLATE = """
         }
 
         // Initial setup on load
-        document.addEventListener('DOMContentLoaded', () => {
-            // Initial range: 30 minutes
-            const now = new Date();
-            const start = new Date(now.getTime() - 30 * 60000);
-            document.getElementById('start-date').value = toISOStringLocal(start);
-            document.getElementById('end-date').value = toISOStringLocal(now);
+    
+        // Initial range: 30 minutes
+        const now = new Date();
+        const start = new Date(now.getTime() - 30 * 60000);
+        document.getElementById('start-date').value = toISOStringLocal(start);
+        document.getElementById('end-date').value = toISOStringLocal(now);
 
-            // Initial fetch
-            fetchData();
-        });
+        // Initial fetch
+        fetchData();
 
         // Auto refresh
         setInterval(() => {
