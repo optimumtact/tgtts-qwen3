@@ -284,8 +284,11 @@ HTML_TEMPLATE = """
         <div style="display:flex; gap:5px; align-items:center; margin-right: 15px; border-right: 1px solid #ccc; padding-right: 15px;">
             <label>Quick Range:</label>
             <button onclick="setRange(30)">30m</button>
+            <button onclick="setRange(180)">3h</button>
             <button onclick="setRange(360)">6h</button>
             <button onclick="setRange(1440)">24h</button>
+            <button onclick="setRange(2880)">2d</button>
+            <button onclick="setRange(7200)">5d</button>
         </div>
         <label>Start Date:</label>
         <input type="datetime-local" id="start-date">
