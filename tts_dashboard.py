@@ -39,7 +39,6 @@ def get_latency():
                 query += " AND "
             query += "timestamp <= ?"
             params.append(end_date)
-    # 1. Load the data
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
 
@@ -74,7 +73,6 @@ def get_latency():
 def get_stats():
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
-    voices = request.args.get("voices")
 
     query = "SELECT * FROM tts_logs"
     params = []
@@ -98,6 +96,29 @@ def get_stats():
     return jsonify(data)
 
 
+def tts_stats(voice, total_time):
+    stats = {
+        "min": float(total_time.min()),
+        "max": float(total_time.max()),
+        "median": float(total_time.median()),
+        "p95": float(total_time.quantile(0.95)),
+    }
+
+    # Kernel Density Estimate (100 points)
+    if len(total_time) > 1 and total_time.std() > 0:
+        try:
+            kde = gaussian_kde(total_time)
+            x_ind = np.linspace(total_time.min(), total_time.max(), 100)
+            y_val = kde.evaluate(x_ind)
+            stats["kde"] = {"x": x_ind.tolist(), "y": y_val.tolist()}
+        except Exception:
+            stats["kde"] = None
+    else:
+        stats["kde"] = None
+
+    return {"voice": voice, "data": stats}
+
+
 @app.route("/api/ttsstats")
 def get_tts_stats():
     start_date = request.args.get("start_date")
@@ -118,10 +139,6 @@ def get_tts_stats():
     if end_date:
         conditions.append("timestamp <= ?")
         params.append(end_date)
-    if voices:
-        placeholders = ",".join(["?"] * len(voices))
-        conditions.append(f"voice_used IN ({placeholders})")
-        params.extend(voices)
 
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
@@ -136,35 +153,16 @@ def get_tts_stats():
     results = []
     # If no voices provided, use all unique voices from data
     voices_to_process = voices if voices else df["voice_used"].unique()
+    print(voices_to_process)
+
+    # first the global corpus result set
+    results.append(tts_stats("global", df["total_time"]))
 
     for voice in voices_to_process:
         voice_df = df[df["voice_used"] == voice]
         if voice_df.empty:
             continue
-
-        total_time = voice_df["total_time"]
-
-        stats = {
-            "min": float(total_time.min()),
-            "max": float(total_time.max()),
-            "median": float(total_time.median()),
-            "p95": float(total_time.quantile(0.95)),
-        }
-
-        # Kernel Density Estimate (100 points)
-        if len(total_time) > 1 and total_time.std() > 0:
-            try:
-                kde = gaussian_kde(total_time)
-                x_ind = np.linspace(total_time.min(), total_time.max(), 100)
-                y_val = kde.evaluate(x_ind)
-                stats["kde"] = {"x": x_ind.tolist(), "y": y_val.tolist()}
-            except Exception:
-                stats["kde"] = None
-        else:
-            stats["kde"] = None
-
-        results.append({"voice": voice, "data": stats})
-
+        results.append(tts_stats(voice, voice_df["total_time"]))
     return jsonify(results)
 
 
