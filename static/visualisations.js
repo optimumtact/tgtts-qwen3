@@ -1,5 +1,5 @@
 const DateTime = luxon.DateTime;
-let rawData = [];
+let availableVoices = [];
 let voiceStats = [];
 let globalStats = {};
 let activeVoices = [];
@@ -47,11 +47,19 @@ async function fetchData() {
 
     try {
         if (currentPage === 'latency') {
-            let url = '/api/stats';
-            if (params.toString()) url += '?' + params.toString();
-            const response = await fetch(url);
-            rawData = await response.json();
-            processData();
+            // 1. Fetch voices to populate sidebar
+            const vResponse = await fetch('/api/voices?' + params.toString());
+            const vData = await vResponse.json();
+
+            // 2. Fetch stats for selected voices (or all if none specified yet)
+            let statsParams = new URLSearchParams(params);
+            if (activeVoices.length > 0) {
+                statsParams.append('voices', activeVoices.join(','));
+            }
+            const sResponse = await fetch('/api/ttsstats?' + statsParams.toString());
+            const statsData = await sResponse.json();
+
+            processData(statsData, vData);
             renderVoiceList();
             renderChart();
         } else {
@@ -81,52 +89,44 @@ async function fetchData() {
     }
 }
 
-function processData() {
-    const voiceDataMap = new Map();
-    const allTimes = [];
+function processData(statsData, vData) {
+    availableVoices = vData;
+    voiceStats = [];
+    globalStats = {};
 
-    rawData.forEach(row => {
-        const voice = row.voice_used || 'unknown';
-        const time = row.tts_time;
-        if (!voiceDataMap.has(voice)) voiceDataMap.set(voice, []);
-        voiceDataMap.get(voice).push(time);
-        allTimes.push(time);
+    statsData.forEach(res => {
+        const stats = {
+            voice: res.voice,
+            ...res.data,
+            is_global: res.voice === 'global'
+        };
+
+        if (stats.is_global) {
+            globalStats = stats;
+        } else {
+            voiceStats.push(stats);
+        }
     });
 
-    if (allTimes.length === 0) {
-        voiceStats = [];
-        globalStats = { voice: "GLOBAL CORPUS", values: [], median: 0, p95: 0, min: 0, max: 0, count: 0, is_global: true };
-        return;
-    }
-
-    allTimes.sort((a, b) => a - b);
-    const globalQ1 = d3.quantile(allTimes, 0.25);
-    const globalQ3 = d3.quantile(allTimes, 0.75);
-
-    function getStats(name, times, isGlobal = false) {
-        times.sort((a, b) => a - b);
-        const p95 = d3.quantile(times, 0.95);
-        return {
-            voice: name,
-            values: times,
-            median: d3.median(times),
-            p95: p95,
-            min: d3.min(times),
-            max: d3.max(times),
-            count: times.length,
-            is_slow: !isGlobal && p95 >= globalQ3,
-            is_fast: !isGlobal && p95 <= globalQ1,
-            is_global: isGlobal,
-            is_insignificant: !isGlobal && times.length < 20
-        };
-    }
-
-    globalStats = getStats("GLOBAL CORPUS", allTimes, true);
-    voiceStats = Array.from(voiceDataMap.entries()).map(([name, times]) => getStats(name, times));
-    voiceStats.sort((a, b) => b.p95 - a.p95);
+    // Merge stats into availableVoices for the sidebar list metadata
+    availableVoices.forEach(v => {
+        const s = voiceStats.find(s => s.voice === v.voice);
+        if (s) {
+            v.p95 = s.p95;
+            v.is_slow = globalStats.q3 ? s.p95 >= globalStats.q3 : false;
+            v.is_fast = globalStats.q1 ? s.p95 <= globalStats.q1 : false;
+            v.is_insignificant = s.count < 20;
+        } else {
+            v.is_insignificant = v.count < 20;
+        }
+    });
+    
+    // Sort sidebar voices by count
+    availableVoices.sort((a, b) => b.count - a.count);
 }
 
 function renderTrafficCharts(data) {
+    // (unchanged)
     const container = d3.select("#traffic-combined-chart");
     container.selectAll("*").remove();
 
@@ -135,7 +135,6 @@ function renderTrafficCharts(data) {
         return;
     }
 
-    // Convert timestamps to JS Date objects
     data.forEach(d => {
         d.date = new Date(d.timestamp);
     });
@@ -153,26 +152,21 @@ function renderTrafficCharts(data) {
         .domain(d3.extent(data, d => d.date))
         .range([0, width]);
 
-    // Left Y Axis: Latency (seconds)
     const yLat = d3.scaleLinear()
         .domain([0, d3.max(data, d => d.p95) * 1.1 || 1])
         .range([height, 0]);
 
-    // Right Y Axis: Request Count
     const yCount = d3.scaleLinear()
         .domain([0, d3.max(data, d => d.count) * 1.2 || 1])
         .range([height, 0]);
 
-    // Draw Axes
     svg.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x));
     svg.append("g").call(d3.axisLeft(yLat).tickFormat(d => d + "s"));
     svg.append("g").attr("transform", `translate(${width},0)`).call(d3.axisRight(yCount));
 
-    // Axis Labels
     svg.append("text").attr("transform", "rotate(-90)").attr("y", -margin.left + 15).attr("x", -height/2).attr("text-anchor", "middle").style("font-size", "12px").text("Latency (seconds)");
     svg.append("text").attr("transform", "rotate(-90)").attr("y", width + margin.right - 15).attr("x", -height/2).attr("text-anchor", "middle").style("font-size", "12px").text("Request Count");
 
-    // Filled Area for Min-p95 Latency
     const area = d3.area()
         .x(d => x(d.date))
         .y0(d => yLat(d.min))
@@ -185,7 +179,6 @@ function renderTrafficCharts(data) {
         .attr("fill-opacity", 0.15)
         .attr("d", area);
 
-    // Median, Mean, and P95 Latency Lines
     const lineMedian = d3.line()
         .x(d => x(d.date))
         .y(d => yLat(d.median))
@@ -196,12 +189,6 @@ function renderTrafficCharts(data) {
         .y(d => yLat(d.mean))
         .curve(d3.curveMonotoneX);
 
-    // const lineP95 = d3.line()
-    //     .x(d => x(d.date))
-    //     .y(d => yLat(d.p95))
-    //     .curve(d3.curveMonotoneX);
-
-    // Median Line (Blue)
     svg.append("path")
         .datum(data)
         .attr("fill", "none")
@@ -209,7 +196,6 @@ function renderTrafficCharts(data) {
         .attr("stroke-width", 2)
         .attr("d", lineMedian);
 
-    // Mean Line (Green, Dashed)
     svg.append("path")
         .datum(data)
         .attr("fill", "none")
@@ -218,15 +204,6 @@ function renderTrafficCharts(data) {
         .style("stroke-dasharray", ("4, 4"))
         .attr("d", lineMean);
 
-    // // P95 Line (Orange)
-    // svg.append("path")
-    //     .datum(data)
-    //     .attr("fill", "none")
-    //     .attr("stroke", "#e67e22")
-    //     .attr("stroke-width", 2)
-    //     .attr("d", lineP95);
-
-    // Request Count - Circle Plot (Scatter)
     svg.selectAll(".count-dot")
         .data(data)
         .enter().append("circle")
@@ -256,7 +233,7 @@ function renderVoiceList() {
     const term = document.getElementById('search-bar').value.toLowerCase();
     list.selectAll("*").remove();
 
-    voiceStats.forEach(d => {
+    availableVoices.forEach(d => {
         const isChecked = activeVoices.includes(d.voice);
         const item = list.append("div").attr("class", "voice-item")
             .style("display", d.voice.toLowerCase().includes(term) ? "flex" : "none")
@@ -270,11 +247,13 @@ function renderVoiceList() {
                 } else {
                     activeVoices = activeVoices.filter(v => v !== d.voice);
                 }
-                renderChart();
+                fetchData();
             });
         
         item.append("span").attr("class", "v-name").text(`${d.voice} (${d.count})`);
-        item.append("span").attr("class", "v-meta").text(`p95: ${d.p95.toFixed(2)}s`);
+        if (d.p95 !== undefined) {
+            item.append("span").attr("class", "v-meta").text(`p95: ${d.p95.toFixed(2)}s`);
+        }
         
         if(d.is_insignificant) item.append("span").attr("class", "badge orange-badge").text("LOW SAMPLES");
         if(d.is_slow) item.append("span").attr("class", "badge slow-badge").text("SLOW");
@@ -286,43 +265,36 @@ function filterVoices() {
     const term = document.getElementById('search-bar').value.toLowerCase();
     d3.selectAll(".voice-item").each(function() {
         const nameText = d3.select(this).select(".v-name").text().toLowerCase();
-        const nameMatch = nameText.split(' (')[0].includes(term); // Only match voice name part
+        const nameMatch = nameText.split(' (')[0].includes(term);
         d3.select(this).style("display", nameMatch ? "flex" : "none");
     });
 }
 
 function toggleAll(state) {
-    d3.selectAll(".voice-checkbox").property("checked", state);
     if (state) {
-        activeVoices = voiceStats.map(v => v.voice);
+        activeVoices = availableVoices.map(v => v.voice);
     } else {
         activeVoices = [];
     }
-    renderChart();
+    fetchData();
 }
 
 function resetFilters() {
     setRange(30);
 }
 
-function kernelDensityEstimator(kernel, X) {
-    return function(V) {
-        return X.map(x => [x, d3.mean(V, v => kernel(x - v))]);
-    };
-}
-function kernelEpanechnikov(k) {
-    return v => Math.abs(v /= k) <= 1 ? 0.75 * (1 - v * v) / k : 0;
-}
-
 function renderChart() {
     if (currentPage !== 'latency') return;
     d3.select("#chart").selectAll("*").remove();
-    if (voiceStats.length === 0 && !globalStats.values.length) {
+    
+    if (!globalStats.voice && voiceStats.length === 0) {
         d3.select("#chart").append("div").text("No data available for the selected range.").style("padding", "20px");
         return;
     }
 
-    const displayData = [globalStats, ...voiceStats.filter(v => activeVoices.includes(v.voice))];
+    const displayData = [];
+    if (globalStats.voice) displayData.push(globalStats);
+    displayData.push(...voiceStats);
     
     const margin = {top: 40, right: 30, bottom: 120, left: 60},
           width = Math.max(900, displayData.length * 100) - margin.left - margin.right,
@@ -334,23 +306,27 @@ function renderChart() {
         .append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
     const x = d3.scalePoint().range([0, width]).domain(displayData.map(d => d.voice)).padding(0.5);
-    const yMax = d3.max(voiceStats.length ? voiceStats : [globalStats], d => d.max) || 1;
+    const yMax = d3.max(displayData, d => d.max) || 1;
     const y = d3.scaleLinear().domain([0, yMax * 1.1]).range([height, 0]);
 
     svg.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x))
         .selectAll("text").attr("transform", "rotate(-45)").style("text-anchor", "end");
     svg.append("g").call(d3.axisLeft(y).tickFormat(d => d + "s"));
 
-    const kde = kernelDensityEstimator(kernelEpanechnikov(.1), y.ticks(60));
     const violinWidth = 50;
 
     displayData.forEach(d => {
         if (d.count === 0) return;
-        const density = kde(d.values);
+        
+        // Use pre-calculated KDE from API
+        const density = d.kde ? d.kde.x.map((xVal, i) => [xVal, d.kde.y[i]]) : [];
+        if (density.length === 0) return;
+
         const xPos = x(d.voice);
         const maxNum = d3.max(density, v => v[1]);
         const xNum = d3.scaleLinear().range([0, violinWidth / 2]).domain([0, maxNum]);
-        const color = d.is_global ? "#9b59b6" : (d.is_insignificant ? "#ffa500" : (d.is_slow ? "#e74c3c" : (d.is_fast ? "#2ecc71" : "#3498db")));
+        
+        const color = d.is_global ? "#9b59b6" : (d.count < 20 ? "#ffa500" : (globalStats.q3 && d.p95 >= globalStats.q3 ? "#e74c3c" : (globalStats.q1 && d.p95 <= globalStats.q1 ? "#2ecc71" : "#3498db")));
 
         svg.append("line").attr("class", "range-line").attr("x1", xPos).attr("x2", xPos).attr("y1", y(d.min)).attr("y2", y(d.max));
         const capW = 6;

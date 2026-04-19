@@ -40,7 +40,7 @@ FROM python-deps AS final
 WORKDIR /workspace
 # Copy application code last
 COPY *.py ./
-COPY *.js /workspace/static/
+COPY static/*.js /workspace/static/
 COPY *.wav ./
 COPY *.ogg ./
 COPY blips_sfx/ /workspace/blips_sfx

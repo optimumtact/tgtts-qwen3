@@ -102,6 +102,8 @@ def tts_stats(voice, total_time):
         "max": float(total_time.max()),
         "median": float(total_time.median()),
         "p95": float(total_time.quantile(0.95)),
+        "q1": float(total_time.quantile(0.25)),
+        "q3": float(total_time.quantile(0.75)),
         "count": int(total_time.count()),
     }
 
