@@ -58,6 +58,11 @@ HTML_TEMPLATE = """
     <style>
         body { font-family: -apple-system, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #fdfdfd; color: #333; }
         header { background: #232f3e; color: white; padding: 15px 25px; display: flex; justify-content: space-between; align-items: center; }
+        .nav-links { display: flex; gap: 20px; }
+        .nav-links a { color: #fff; text-decoration: none; font-weight: 500; opacity: 0.8; cursor: pointer; }
+        .nav-links a.active { opacity: 1; border-bottom: 2px solid #fff; }
+        .nav-links a:hover { opacity: 1; }
+
         .main-container { display: flex; flex: 1; overflow: hidden; }
         #sidebar { width: 380px; background: white; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
         .sidebar-header { padding: 15px; border-bottom: 1px solid #eee; }
@@ -65,6 +70,10 @@ HTML_TEMPLATE = """
         #voice-list { flex: 1; overflow-y: auto; padding: 10px; }
         #chart-container { flex: 1; padding: 20px; overflow-y: auto; background: #fff; }
         
+        #traffic-page { display: none; flex: 1; padding: 20px; overflow-y: auto; background: #fff; flex-direction: column; }
+        .traffic-chart-box { background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 20px; margin-bottom: 30px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .traffic-chart-box h3 { margin-top: 0; color: #232f3e; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+
         .info-section { margin-top: 30px; padding: 20px; background: #f8f9fa; border-radius: 8px; border-left: 5px solid #232f3e; max-width: 900px; }
         .key-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-bottom: 20px; }
         .key-item { display: flex; align-items: center; font-size: 13px; }
@@ -84,6 +93,12 @@ HTML_TEMPLATE = """
         .range-cap { stroke: #333; stroke-width: 2; }
         .median-dot { fill: white; stroke: #333; stroke-width: 1.5; }
         .p95-dot { fill: #ff4d4d; stroke: #b30000; stroke-width: 1; }
+        
+        .bar { fill: #3498db; }
+        .bar:hover { fill: #2980b9; }
+        .line { fill: none; stroke: #e74c3c; stroke-width: 2; }
+        .dot { fill: #e74c3c; }
+
         .tooltip { position: absolute; background: rgba(0,0,0,0.9); color: white; padding: 12px; border-radius: 8px; pointer-events: none; font-size: 12px; line-height: 1.5; z-index: 100; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
 
         .controls { display: flex; gap: 10px; align-items: center; padding: 10px 25px; background: #eee; border-bottom: 1px solid #ddd; }
@@ -96,9 +111,19 @@ HTML_TEMPLATE = """
             <h1 style="margin:0; font-size: 20px;">TTS Latency Analyzer (Real-time)</h1>
             <small style="opacity:0.8;">Categorization based on 95th Percentile (P95) stability</small>
         </div>
+        <div class="nav-links">
+            <a id="nav-latency" class="active" onclick="showPage('latency')">Latency Stats</a>
+            <a id="nav-traffic" onclick="showPage('traffic')">Traffic Analysis</a>
+        </div>
         <div id="last-update" style="font-size: 12px; opacity: 0.8;"></div>
     </header>
     <div class="controls">
+        <div style="display:flex; gap:5px; align-items:center; margin-right: 15px; border-right: 1px solid #ccc; padding-right: 15px;">
+            <label>Quick Range:</label>
+            <button onclick="setRange(30)">30m</button>
+            <button onclick="setRange(360)">6h</button>
+            <button onclick="setRange(1440)">24h</button>
+        </div>
         <label>Start Date:</label>
         <input type="datetime-local" id="start-date">
         <label>End Date:</label>
@@ -109,7 +134,8 @@ HTML_TEMPLATE = """
             <label><input type="checkbox" id="auto-refresh" checked> Auto-refresh (30s)</label>
         </div>
     </div>
-    <div class="main-container">
+    
+    <div id="latency-page" class="main-container">
         <div id="sidebar">
             <div class="sidebar-header">
                 <input type="text" id="search-bar" placeholder="Search voices..." onkeyup="filterVoices()">
@@ -139,12 +165,58 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <div id="traffic-page">
+        <div class="traffic-chart-box">
+            <h3>Requests per Minute</h3>
+            <div id="requests-chart"></div>
+        </div>
+        <div class="traffic-chart-box">
+            <h3>Median Total Time (per minute)</h3>
+            <div id="latency-over-time-chart"></div>
+        </div>
+    </div>
+
     <script>
         let rawData = [];
         let voiceStats = [];
         let globalStats = {};
         let activeVoices = [];
+        let currentPage = 'latency';
         const tooltip = d3.select("body").append("div").attr("class", "tooltip").style("opacity", 0);
+
+        function toISOStringLocal(date) {
+            const pad = n => n.toString().padStart(2, '0');
+            return date.getFullYear() + '-' + 
+                   pad(date.getMonth() + 1) + '-' + 
+                   pad(date.getDate()) + 'T' + 
+                   pad(date.getHours()) + ':' + 
+                   pad(date.getMinutes());
+        }
+
+        function setRange(minutes) {
+            if (minutes === null) {
+                document.getElementById('start-date').value = '';
+                document.getElementById('end-date').value = '';
+            } else {
+                const now = new Date();
+                const start = new Date(now.getTime() - minutes * 60000);
+                document.getElementById('start-date').value = toISOStringLocal(start);
+                document.getElementById('end-date').value = toISOStringLocal(now);
+            }
+            fetchData();
+        }
+
+        function showPage(page) {
+            currentPage = page;
+            document.getElementById('latency-page').style.display = (page === 'latency') ? 'flex' : 'none';
+            document.getElementById('traffic-page').style.display = (page === 'traffic') ? 'flex' : 'none';
+            
+            document.getElementById('nav-latency').classList.toggle('active', page === 'latency');
+            document.getElementById('nav-traffic').classList.toggle('active', page === 'traffic');
+            
+            if (page === 'latency') renderChart();
+            else renderTrafficCharts();
+        }
 
         async function fetchData() {
             const startDate = document.getElementById('start-date').value;
@@ -161,7 +233,10 @@ HTML_TEMPLATE = """
                 rawData = await response.json();
                 processData();
                 renderVoiceList();
-                renderChart();
+                
+                if (currentPage === 'latency') renderChart();
+                else renderTrafficCharts();
+                
                 document.getElementById('last-update').innerText = 'Last updated: ' + new Date().toLocaleTimeString();
             } catch (e) {
                 console.error("Failed to fetch data", e);
@@ -211,6 +286,123 @@ HTML_TEMPLATE = """
             globalStats = getStats("GLOBAL CORPUS", allTimes, true);
             voiceStats = Array.from(voiceDataMap.entries()).map(([name, times]) => getStats(name, times));
             voiceStats.sort((a, b) => b.p95 - a.p95);
+        }
+
+        function processTrafficData() {
+            const minuteData = new Map();
+            rawData.forEach(row => {
+                // SQLite timestamps are usually UTC
+                const ts = row.timestamp.includes(' ') ? row.timestamp.replace(' ', 'T') + 'Z' : row.timestamp;
+                const date = new Date(ts);
+                date.setSeconds(0);
+                date.setMilliseconds(0);
+                const key = date.toISOString();
+                
+                if (!minuteData.has(key)) {
+                    minuteData.set(key, { count: 0, times: [] });
+                }
+                const data = minuteData.get(key);
+                data.count++;
+                data.times.push(row.total_time);
+            });
+
+            const trafficData = Array.from(minuteData.entries()).map(([key, data]) => {
+                return {
+                    time: new Date(key),
+                    count: data.count,
+                    median: d3.median(data.times)
+                };
+            });
+            trafficData.sort((a, b) => a.time - b.time);
+            return trafficData;
+        }
+
+        function renderTrafficCharts() {
+            d3.select("#requests-chart").selectAll("*").remove();
+            d3.select("#latency-over-time-chart").selectAll("*").remove();
+
+            if (rawData.length === 0) {
+                d3.select("#requests-chart").append("div").text("No data available for the selected range.").style("padding", "20px");
+                return;
+            }
+
+            const data = processTrafficData();
+            if (data.length === 0) return;
+
+            const margin = {top: 20, right: 30, bottom: 50, left: 60},
+                  width = document.getElementById('traffic-page').offsetWidth - margin.left - margin.right - 40,
+                  height = 300 - margin.top - margin.bottom;
+
+            const x = d3.scaleTime()
+                .domain(d3.extent(data, d => d.time))
+                .range([0, width]);
+
+            // Requests Chart
+            const svg1 = d3.select("#requests-chart").append("svg")
+                .attr("width", width + margin.left + margin.right)
+                .attr("height", height + margin.top + margin.bottom)
+                .append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+            const y1 = d3.scaleLinear()
+                .domain([0, d3.max(data, d => d.count) * 1.1])
+                .range([height, 0]);
+
+            svg1.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x));
+            svg1.append("g").call(d3.axisLeft(y1));
+
+            const barWidth = Math.max(2, (width / data.length) * 0.8);
+
+            svg1.selectAll(".bar")
+                .data(data)
+                .enter().append("rect")
+                .attr("class", "bar")
+                .attr("x", d => x(d.time) - barWidth/2)
+                .attr("y", d => y1(d.count))
+                .attr("width", barWidth)
+                .attr("height", d => height - y1(d.count))
+                .on("mouseover", (event, d) => {
+                    tooltip.transition().duration(200).style("opacity", .9);
+                    tooltip.html(`Time: ${d.time.toLocaleString()}<br>Requests: ${d.count}`)
+                        .style("left", (event.pageX + 15) + "px").style("top", (event.pageY - 28) + "px");
+                })
+                .on("mouseout", () => tooltip.transition().duration(500).style("opacity", 0));
+
+            // Median Latency Chart
+            const svg2 = d3.select("#latency-over-time-chart").append("svg")
+                .attr("width", width + margin.left + margin.right)
+                .attr("height", height + margin.top + margin.bottom)
+                .append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+            const y2 = d3.scaleLinear()
+                .domain([0, d3.max(data, d => d.median) * 1.2])
+                .range([height, 0]);
+
+            svg2.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x));
+            svg2.append("g").call(d3.axisLeft(y2).tickFormat(d => d + "s"));
+
+            const line = d3.line()
+                .x(d => x(d.time))
+                .y(d => y2(d.median))
+                .curve(d3.curveMonotoneX);
+
+            svg2.append("path")
+                .datum(data)
+                .attr("class", "line")
+                .attr("d", line);
+
+            svg2.selectAll(".dot")
+                .data(data)
+                .enter().append("circle")
+                .attr("class", "dot")
+                .attr("cx", d => x(d.time))
+                .attr("cy", d => y2(d.median))
+                .attr("r", 3)
+                .on("mouseover", (event, d) => {
+                    tooltip.transition().duration(200).style("opacity", .9);
+                    tooltip.html(`Time: ${d.time.toLocaleString()}<br>Median Total Time: ${d.median.toFixed(3)}s`)
+                        .style("left", (event.pageX + 15) + "px").style("top", (event.pageY - 28) + "px");
+                })
+                .on("mouseout", () => tooltip.transition().duration(500).style("opacity", 0));
         }
 
         function renderVoiceList() {
@@ -264,9 +456,7 @@ HTML_TEMPLATE = """
         }
 
         function resetFilters() {
-            document.getElementById('start-date').value = '';
-            document.getElementById('end-date').value = '';
-            fetchData();
+            setRange(30);
         }
 
         function kernelDensityEstimator(kernel, X) {
@@ -279,6 +469,7 @@ HTML_TEMPLATE = """
         }
 
         function renderChart() {
+            if (currentPage !== 'latency') return;
             d3.select("#chart").selectAll("*").remove();
             if (voiceStats.length === 0 && !globalStats.values.length) {
                 d3.select("#chart").append("div").text("No data available for the selected range.").style("padding", "20px");
@@ -345,8 +536,17 @@ HTML_TEMPLATE = """
             });
         }
 
-        // Initial fetch
-        fetchData();
+        // Initial setup on load
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initial range: 30 minutes
+            const now = new Date();
+            const start = new Date(now.getTime() - 30 * 60000);
+            document.getElementById('start-date').value = toISOStringLocal(start);
+            document.getElementById('end-date').value = toISOStringLocal(now);
+
+            // Initial fetch
+            fetchData();
+        });
 
         // Auto refresh
         setInterval(() => {
