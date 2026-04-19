@@ -38,7 +38,7 @@ def get_latency():
             query += "timestamp <= ?"
             params.append(end_date)
     # 1. Load the data
-    df = pd.read_sql_query(query, conn)
+    df = pd.read_sql_query(query, conn, params=params)
     conn.close()
 
     # 2. Convert timestamp and set as index
@@ -225,8 +225,7 @@ HTML_TEMPLATE = """
             <div style="display: flex; gap: 20px; margin-bottom: 15px; font-size: 13px; justify-content: center; flex-wrap: wrap;">
                 <div style="display: flex; align-items: center;"><div style="width: 20px; height: 2px; background: #3498db; margin-right: 8px;"></div> Median</div>
                 <div style="display: flex; align-items: center;"><div style="width: 20px; height: 2px; border-top: 2px dashed #2ecc71; margin-right: 8px;"></div> Mean</div>
-                <div style="display: flex; align-items: center;"><div style="width: 20px; height: 2px; background: #e67e22; margin-right: 8px;"></div> P95</div>
-                <div style="display: flex; align-items: center;"><div style="width: 20px; height: 12px; background: #3498db; opacity: 0.15; margin-right: 8px;"></div> Range (Min-Max)</div>
+                <div style="display: flex; align-items: center;"><div style="width: 20px; height: 12px; background: #3498db; opacity: 0.15; margin-right: 8px;"></div> Range (Min-P95)</div>
                 <div style="display: flex; align-items: center;"><div style="width: 10px; height: 10px; background: #e74c3c; border-radius: 50%; margin-right: 8px;"></div> Request Count</div>
             </div>
             <div id="traffic-combined-chart"></div>
