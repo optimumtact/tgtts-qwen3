@@ -31,28 +31,49 @@ function showPage(page) {
     document.getElementById('nav-latency').classList.toggle('active', page === 'latency');
     document.getElementById('nav-traffic').classList.toggle('active', page === 'traffic');
     
-    if (page === 'latency') renderChart();
-    else renderTrafficCharts();
+    fetchData();
 }
 
 async function fetchData() {
     const startDate = document.getElementById('start-date').value;
     const endDate = document.getElementById('end-date').value;
     
-    let url = '/api/stats';
     const params = new URLSearchParams();
-    if (startDate) params.append('start_date', DateTime.fromISO(startDate).toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
-    if (endDate) params.append('end_date', DateTime.fromISO(endDate).toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
-    if (params.toString()) url += '?' + params.toString();
+    const start = DateTime.fromISO(startDate);
+    const end = DateTime.fromISO(endDate);
+
+    if (startDate) params.append('start_date', start.toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
+    if (endDate) params.append('end_date', end.toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
 
     try {
-        const response = await fetch(url);
-        rawData = await response.json();
-        processData();
-        renderVoiceList();
-        
-        if (currentPage === 'latency') renderChart();
-        else renderTrafficCharts();
+        if (currentPage === 'latency') {
+            let url = '/api/stats';
+            if (params.toString()) url += '?' + params.toString();
+            const response = await fetch(url);
+            rawData = await response.json();
+            processData();
+            renderVoiceList();
+            renderChart();
+        } else {
+            // Traffic page - calculate sensible period
+            let period = 60;
+            if (start.isValid && end.isValid) {
+                const diffSeconds = end.diff(start, 'seconds').seconds;
+                if (diffSeconds <= 3600) period = 60; // 1 min for up to 1 hour
+                else if (diffSeconds <= 21600) period = 300; // 5 mins for up to 6 hours
+                else if (diffSeconds <= 86400) period = 900; // 15 mins for up to 24 hours
+                else if (diffSeconds <= 604800) period = 3600; // 1 hour for up to 7 days
+                else if (diffSeconds <= 2592000) period = 21600; // 6 hours for up to 30 days
+                else period = 86400; // 1 day for more than 30 days
+            }
+
+            params.append('period', period);
+            let url = '/api/latency';
+            if (params.toString()) url += '?' + params.toString();
+            const response = await fetch(url);
+            const data = await response.json();
+            renderTrafficCharts(data);
+        }
         
         document.getElementById('last-update').innerText = 'Last updated: ' + new Date().toLocaleTimeString();
     } catch (e) {
@@ -105,119 +126,98 @@ function processData() {
     voiceStats.sort((a, b) => b.p95 - a.p95);
 }
 
-function processTrafficData() {
-    const minuteData = new Map();
-    rawData.forEach(row => {
-        // SQLite timestamps are usually UTC
-        const ts = row.timestamp.includes(' ') ? row.timestamp.replace(' ', 'T') + 'Z' : row.timestamp;
-        const date = new Date(ts);
-        date.setSeconds(0);
-        date.setMilliseconds(0);
-        const key = date.toISOString();
-        
-        if (!minuteData.has(key)) {
-            minuteData.set(key, { count: 0, times: [] });
-        }
-        const data = minuteData.get(key);
-        data.count++;
-        data.times.push(row.total_time);
-    });
+function renderTrafficCharts(data) {
+    const container = d3.select("#traffic-combined-chart");
+    container.selectAll("*").remove();
 
-    const trafficData = Array.from(minuteData.entries()).map(([key, data]) => {
-        return {
-            time: new Date(key),
-            count: data.count,
-            median: d3.median(data.times)
-        };
-    });
-    trafficData.sort((a, b) => a.time - b.time);
-    return trafficData;
-}
-
-function renderTrafficCharts() {
-    d3.select("#requests-chart").selectAll("*").remove();
-    d3.select("#latency-over-time-chart").selectAll("*").remove();
-
-    if (rawData.length === 0) {
-        d3.select("#requests-chart").append("div").text("No data available for the selected range.").style("padding", "20px");
+    if (!data || data.length === 0) {
+        container.append("div").text("No data available for the selected range.").style("padding", "20px");
         return;
     }
 
-    const data = processTrafficData();
-    if (data.length === 0) return;
+    // Convert timestamps to JS Date objects
+    data.forEach(d => {
+        d.date = new Date(d.timestamp);
+    });
 
-    const margin = {top: 20, right: 30, bottom: 50, left: 60},
+    const margin = {top: 20, right: 60, bottom: 50, left: 60},
           width = document.getElementById('traffic-page').offsetWidth - margin.left - margin.right - 40,
-          height = 300 - margin.top - margin.bottom;
+          height = 400 - margin.top - margin.bottom;
+
+    const svg = container.append("svg")
+        .attr("width", width + margin.left + margin.right)
+        .attr("height", height + margin.top + margin.bottom)
+        .append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
     const x = d3.scaleTime()
-        .domain(d3.extent(data, d => d.time))
+        .domain(d3.extent(data, d => d.date))
         .range([0, width]);
 
-    // Requests Chart
-    const svg1 = d3.select("#requests-chart").append("svg")
-        .attr("width", width + margin.left + margin.right)
-        .attr("height", height + margin.top + margin.bottom)
-        .append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-
-    const y1 = d3.scaleLinear()
-        .domain([0, d3.max(data, d => d.count) * 1.1])
+    // Left Y Axis: Latency (seconds)
+    const yLat = d3.scaleLinear()
+        .domain([0, d3.max(data, d => d.max) * 1.1 || 1])
         .range([height, 0]);
 
-    svg1.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x));
-    svg1.append("g").call(d3.axisLeft(y1));
-
-    const barWidth = Math.max(2, (width / data.length) * 0.8);
-
-    svg1.selectAll(".bar")
-        .data(data)
-        .enter().append("rect")
-        .attr("class", "bar")
-        .attr("x", d => x(d.time) - barWidth/2)
-        .attr("y", d => y1(d.count))
-        .attr("width", barWidth)
-        .attr("height", d => height - y1(d.count))
-        .on("mouseover", (event, d) => {
-            tooltip.transition().duration(200).style("opacity", .9);
-            tooltip.html(`Time: ${d.time.toLocaleString()}<br>Requests: ${d.count}`)
-                .style("left", (event.pageX + 15) + "px").style("top", (event.pageY - 28) + "px");
-        })
-        .on("mouseout", () => tooltip.transition().duration(500).style("opacity", 0));
-
-    // Median Latency Chart
-    const svg2 = d3.select("#latency-over-time-chart").append("svg")
-        .attr("width", width + margin.left + margin.right)
-        .attr("height", height + margin.top + margin.bottom)
-        .append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-
-    const y2 = d3.scaleLinear()
-        .domain([0, d3.max(data, d => d.median) * 1.2])
+    // Right Y Axis: Request Count
+    const yCount = d3.scaleLinear()
+        .domain([0, d3.max(data, d => d.count) * 1.2 || 1])
         .range([height, 0]);
 
-    svg2.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x));
-    svg2.append("g").call(d3.axisLeft(y2).tickFormat(d => d + "s"));
+    // Draw Axes
+    svg.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x));
+    svg.append("g").call(d3.axisLeft(yLat).tickFormat(d => d + "s"));
+    svg.append("g").attr("transform", `translate(${width},0)`).call(d3.axisRight(yCount));
 
-    const line = d3.line()
-        .x(d => x(d.time))
-        .y(d => y2(d.median))
+    // Axis Labels
+    svg.append("text").attr("transform", "rotate(-90)").attr("y", -margin.left + 15).attr("x", -height/2).attr("text-anchor", "middle").style("font-size", "12px").text("Latency (seconds)");
+    svg.append("text").attr("transform", "rotate(-90)").attr("y", width + margin.right - 15).attr("x", -height/2).attr("text-anchor", "middle").style("font-size", "12px").text("Request Count");
+
+    // Filled Area for Min-Max Latency
+    const area = d3.area()
+        .x(d => x(d.date))
+        .y0(d => yLat(d.min))
+        .y1(d => yLat(d.max))
         .curve(d3.curveMonotoneX);
 
-    svg2.append("path")
+    svg.append("path")
         .datum(data)
-        .attr("class", "line")
-        .attr("d", line);
+        .attr("fill", "#3498db")
+        .attr("fill-opacity", 0.15)
+        .attr("d", area);
 
-    svg2.selectAll(".dot")
+    // Median Latency Line
+    const lineMedian = d3.line()
+        .x(d => x(d.date))
+        .y(d => yLat(d.median))
+        .curve(d3.curveMonotoneX);
+
+    svg.append("path")
+        .datum(data)
+        .attr("fill", "none")
+        .attr("stroke", "#3498db")
+        .attr("stroke-width", 2)
+        .attr("d", lineMedian);
+
+    // Request Count - Circle Plot (Scatter)
+    svg.selectAll(".count-dot")
         .data(data)
         .enter().append("circle")
-        .attr("class", "dot")
-        .attr("cx", d => x(d.time))
-        .attr("cy", d => y2(d.median))
-        .attr("r", 3)
+        .attr("class", "count-dot")
+        .attr("cx", d => x(d.date))
+        .attr("cy", d => yCount(d.count))
+        .attr("r", 4)
+        .attr("fill", "#e74c3c")
+        .attr("fill-opacity", 0.7)
         .on("mouseover", (event, d) => {
             tooltip.transition().duration(200).style("opacity", .9);
-            tooltip.html(`Time: ${d.time.toLocaleString()}<br>Median Total Time: ${d.median.toFixed(3)}s`)
-                .style("left", (event.pageX + 15) + "px").style("top", (event.pageY - 28) + "px");
+            tooltip.html(`
+                <b style="color:#e74c3c">Time: ${d.date.toLocaleString()}</b><hr>
+                Requests: ${d.count}<br>
+                Median Latency: ${d.median.toFixed(3)}s<br>
+                Latency Range: ${d.min.toFixed(3)}s - ${d.max.toFixed(3)}s<br>
+                P95 Latency: ${d.p95.toFixed(3)}s
+            `)
+            .style("left", (event.pageX + 15) + "px").style("top", (event.pageY - 28) + "px");
         })
         .on("mouseout", () => tooltip.transition().duration(500).style("opacity", 0));
 }
@@ -352,8 +352,6 @@ function renderChart() {
         svg.append("circle").attr("class", "p95-dot").attr("cx", xPos).attr("cy", y(d.p95)).attr("r", 3.5);
     });
 }
-
-// Initial setup on load
 
 // Initial range: 30 minutes
 const now = new Date();

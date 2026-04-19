@@ -221,12 +221,8 @@ HTML_TEMPLATE = """
 
     <div id="traffic-page">
         <div class="traffic-chart-box">
-            <h3>Requests per Minute</h3>
-            <div id="requests-chart"></div>
-        </div>
-        <div class="traffic-chart-box">
-            <h3>Median Total Time (per minute)</h3>
-            <div id="latency-over-time-chart"></div>
+            <h3>Traffic & Latency Analysis</h3>
+            <div id="traffic-combined-chart"></div>
         </div>
     </div>
     <script src="/static/visualisations.js"></script>
