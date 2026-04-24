@@ -23,6 +23,30 @@ function setRange(minutes) {
     fetchData();
 }
 
+let autoRefreshInterval = null;
+
+function toggleAutoRefresh() {
+    const isChecked = document.getElementById('auto-refresh').checked;
+    const manualControls = document.getElementById('manual-range-controls');
+    
+    if (isChecked) {
+        manualControls.style.visibility = 'hidden';
+        // Initial live fetch
+        fetchData();
+        // Start interval
+        if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+        autoRefreshInterval = setInterval(() => {
+            fetchData();
+        }, 30000);
+    } else {
+        manualControls.style.visibility = 'visible';
+        if (autoRefreshInterval) {
+            clearInterval(autoRefreshInterval);
+            autoRefreshInterval = null;
+        }
+    }
+}
+
 function showPage(page) {
     currentPage = page;
     document.getElementById('latency-page').style.display = (page === 'latency') ? 'flex' : 'none';
@@ -31,19 +55,45 @@ function showPage(page) {
     document.getElementById('nav-latency').classList.toggle('active', page === 'latency');
     document.getElementById('nav-traffic').classList.toggle('active', page === 'traffic');
     
+    // Auto-refresh is only for traffic page
+    const autoRefreshLabel = document.querySelector('#traffic-page label');
+    if (page === 'latency') {
+        if (autoRefreshInterval) {
+            document.getElementById('auto-refresh').checked = false;
+            toggleAutoRefresh();
+        }
+    }
+    
     fetchData();
 }
 
 async function fetchData() {
-    const startDate = document.getElementById('start-date').value;
-    const endDate = document.getElementById('end-date').value;
+    const autoRefresh = document.getElementById('auto-refresh').checked;
+    let startDate, endDate;
+    
+    if (currentPage === 'traffic' && autoRefresh) {
+        const now = DateTime.now();
+        const start = now.minus({ hours: 1 });
+        startDate = start.toUTC().toFormat('yyyy-MM-dd HH:mm:ss');
+        endDate = now.toUTC().toFormat('yyyy-MM-dd HH:mm:ss');
+        // Update the display inputs for reference, though they are hidden
+        document.getElementById('start-date').value = start.toFormat("yyyy-MM-dd'T'HH:mm");
+        document.getElementById('end-date').value = now.toFormat("yyyy-MM-dd'T'HH:mm");
+    } else {
+        startDate = document.getElementById('start-date').value;
+        endDate = document.getElementById('end-date').value;
+    }
     
     const params = new URLSearchParams();
     const start = DateTime.fromISO(startDate);
     const end = DateTime.fromISO(endDate);
 
-    if (startDate) params.append('start_date', start.toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
-    if (endDate) params.append('end_date', end.toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
+    if (startDate) {
+        params.append('start_date', currentPage === 'traffic' && autoRefresh ? startDate : start.toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
+    }
+    if (endDate) {
+        params.append('end_date', currentPage === 'traffic' && autoRefresh ? endDate : end.toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
+    }
 
     try {
         if (currentPage === 'latency') {
@@ -64,7 +114,9 @@ async function fetchData() {
         } else {
             // Traffic page - calculate sensible period
             let period = 60;
-            if (start.isValid && end.isValid) {
+            if (autoRefresh) {
+                period = 60; // 1 min increments for 1h window
+            } else if (start.isValid && end.isValid) {
                 const diffSeconds = end.diff(start, 'seconds').seconds;
                 if (diffSeconds <= 3600) period = 60; // 1 min for up to 1 hour
                 else if (diffSeconds <= 21600) period = 300; // 5 mins for up to 6 hours
@@ -119,8 +171,8 @@ function processData(statsData, vData) {
         }
     });
     
-    // Sort sidebar voices by count
-    availableVoices.sort((a, b) => b.count - a.count);
+    // Sort sidebar voices by p95 descending (slowest first)
+    availableVoices.sort((a, b) => b.p95 - a.p95);
 }
 
 function renderTrafficCharts(data) {
@@ -233,8 +285,9 @@ function renderVoiceList() {
 
     availableVoices.forEach(d => {
         const isChecked = activeVoices.includes(d.voice);
+        const displayLabel = `${d.voice} (${d.count})`;
         const item = list.append("div").attr("class", "voice-item")
-            .style("display", d.voice.toLowerCase().includes(term) ? "flex" : "none")
+            .style("display", displayLabel.toLowerCase().includes(term) ? "flex" : "none")
             .style("background", d.is_insignificant ? "#fff7ed" : "transparent");
         
         item.append("input").attr("type", "checkbox").attr("class", "voice-checkbox")
@@ -262,18 +315,50 @@ function renderVoiceList() {
 function filterVoices() {
     const term = document.getElementById('search-bar').value.toLowerCase();
     d3.selectAll(".voice-item").each(function() {
-        const nameText = d3.select(this).select(".v-name").text().toLowerCase();
-        const nameMatch = nameText.split(' (')[0].includes(term);
-        d3.select(this).style("display", nameMatch ? "flex" : "none");
+        // Find the voice name span
+        const nameSpan = d3.select(this).select(".v-name");
+        if (nameSpan.empty()) return;
+        
+        // Get the full text which is "voice_name (count)"
+        const nameText = nameSpan.text().toLowerCase();
+        // We match against the full text so user can search by name or count
+        const matches = nameText.includes(term);
+        d3.select(this).style("display", matches ? "flex" : "none");
     });
 }
 
 function toggleAll(state) {
+    const term = document.getElementById('search-bar').value.toLowerCase();
+    
+    // Determine which voices to toggle
+    const voicesToToggle = availableVoices.filter(v => {
+        // Match the same logic as filterVoices
+        const displayLabel = `${v.voice} (${v.count})`.toLowerCase();
+        return displayLabel.includes(term);
+    });
+
     if (state) {
-        activeVoices = availableVoices.map(v => v.voice);
+        // Add all voices to toggle to activeVoices if not already there
+        voicesToToggle.forEach(v => {
+            if (!activeVoices.includes(v.voice)) {
+                activeVoices.push(v.voice);
+            }
+        });
     } else {
-        activeVoices = [];
+        // Remove all voices to toggle from activeVoices
+        const voicesToRemove = voicesToToggle.map(v => v.voice);
+        activeVoices = activeVoices.filter(v => !voicesToRemove.includes(v));
     }
+    
+    // Update UI immediately for better responsiveness
+    d3.selectAll(".voice-item").each(function() {
+        const item = d3.select(this);
+        const isVisible = item.style("display") !== "none";
+        if (isVisible) {
+            item.select(".voice-checkbox").property("checked", state);
+        }
+    });
+
     fetchData();
 }
 
@@ -364,10 +449,3 @@ document.getElementById('end-date').value = toISOStringLocal(now);
 
 // Initial fetch
 fetchData();
-
-// Auto refresh
-setInterval(() => {
-    if (document.getElementById('auto-refresh').checked) {
-        fetchData();
-    }
-}, 30000);

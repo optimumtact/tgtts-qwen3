@@ -254,23 +254,22 @@ HTML_TEMPLATE = """
         <div id="last-update" style="font-size: 12px; opacity: 0.8;"></div>
     </header>
     <div class="controls">
-        <div style="display:flex; gap:5px; align-items:center; margin-right: 15px; border-right: 1px solid #ccc; padding-right: 15px;">
-            <label>Quick Range:</label>
-            <button onclick="setRange(30)">30m</button>
-            <button onclick="setRange(180)">3h</button>
-            <button onclick="setRange(360)">6h</button>
-            <button onclick="setRange(1440)">24h</button>
-            <button onclick="setRange(2880)">2d</button>
-            <button onclick="setRange(7200)">5d</button>
-        </div>
-        <label>Start Date:</label>
-        <input type="datetime-local" id="start-date">
-        <label>End Date:</label>
-        <input type="datetime-local" id="end-date">
-        <button onclick="fetchData()">Filter</button>
-        <button onclick="resetFilters()">Reset</button>
-        <div style="margin-left: auto;">
-            <label><input type="checkbox" id="auto-refresh" checked> Auto-refresh (30s)</label>
+        <div id="manual-range-controls" style="display:flex; gap:10px; align-items:center;">
+            <div style="display:flex; gap:5px; align-items:center; margin-right: 15px; border-right: 1px solid #ccc; padding-right: 15px;">
+                <label>Quick Range:</label>
+                <button onclick="setRange(30)">30m</button>
+                <button onclick="setRange(180)">3h</button>
+                <button onclick="setRange(360)">6h</button>
+                <button onclick="setRange(1440)">24h</button>
+                <button onclick="setRange(2880)">2d</button>
+                <button onclick="setRange(7200)">5d</button>
+            </div>
+            <label>Start Date:</label>
+            <input type="datetime-local" id="start-date">
+            <label>End Date:</label>
+            <input type="datetime-local" id="end-date">
+            <button onclick="fetchData()">Filter</button>
+            <button onclick="resetFilters()">Reset</button>
         </div>
     </div>
     
@@ -306,7 +305,13 @@ HTML_TEMPLATE = """
 
     <div id="traffic-page">
         <div class="traffic-chart-box">
-            <h3>Traffic & Latency Analysis</h3>
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; margin-bottom: 15px; padding-bottom: 10px;">
+                <h3 style="margin:0;">Traffic & Latency Analysis</h3>
+                <label style="font-size: 13px; font-weight: 500; cursor: pointer;">
+                    <input type="checkbox" id="auto-refresh" onchange="toggleAutoRefresh()"> 
+                    Live Sliding Window (Last 1h)
+                </label>
+            </div>
             <div style="display: flex; gap: 20px; margin-bottom: 15px; font-size: 13px; justify-content: center; flex-wrap: wrap;">
                 <div style="display: flex; align-items: center;"><div style="width: 20px; height: 2px; background: #3498db; margin-right: 8px;"></div> Median</div>
                 <div style="display: flex; align-items: center;"><div style="width: 20px; height: 2px; border-top: 2px dashed #2ecc71; margin-right: 8px;"></div> Mean</div>
