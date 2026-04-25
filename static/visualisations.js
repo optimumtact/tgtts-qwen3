@@ -4,6 +4,7 @@ let voiceStats = [];
 let globalStats = {};
 let activeVoices = [];
 let currentPage = 'latency';
+let selectedBand = 'all';
 const tooltip = d3.select("body").append("div").attr("class", "tooltip").style("opacity", 0);
 
 function toISOStringLocal(date) {
@@ -54,9 +55,11 @@ function showPage(page) {
     
     document.getElementById('nav-latency').classList.toggle('active', page === 'latency');
     document.getElementById('nav-traffic').classList.toggle('active', page === 'traffic');
+
+    document.getElementById('latency-controls').style.display = (page === 'latency') ? 'flex' : 'none';
+    document.getElementById('manual-range-controls').style.display = (page === 'traffic') ? 'flex' : 'none';
     
     // Auto-refresh is only for traffic page
-    const autoRefreshLabel = document.querySelector('#traffic-page label');
     if (page === 'latency') {
         if (autoRefreshInterval) {
             document.getElementById('auto-refresh').checked = false;
@@ -68,36 +71,39 @@ function showPage(page) {
 }
 
 async function fetchData() {
-    const autoRefresh = document.getElementById('auto-refresh').checked;
+    const autoRefresh = document.getElementById('auto-refresh') ? document.getElementById('auto-refresh').checked : false;
     let startDate, endDate;
     
-    if (currentPage === 'traffic' && autoRefresh) {
-        const now = DateTime.now();
-        const start = now.minus({ hours: 1 });
-        startDate = start.toUTC().toFormat('yyyy-MM-dd HH:mm:ss');
-        endDate = now.toUTC().toFormat('yyyy-MM-dd HH:mm:ss');
-        // Update the display inputs for reference, though they are hidden
-        document.getElementById('start-date').value = start.toFormat("yyyy-MM-dd'T'HH:mm");
-        document.getElementById('end-date').value = now.toFormat("yyyy-MM-dd'T'HH:mm");
-    } else {
-        startDate = document.getElementById('start-date').value;
-        endDate = document.getElementById('end-date').value;
-    }
-    
     const params = new URLSearchParams();
-    const start = DateTime.fromISO(startDate);
-    const end = DateTime.fromISO(endDate);
 
-    if (startDate) {
-        params.append('start_date', currentPage === 'traffic' && autoRefresh ? startDate : start.toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
-    }
-    if (endDate) {
-        params.append('end_date', currentPage === 'traffic' && autoRefresh ? endDate : end.toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
+    if (currentPage === 'latency') {
+        params.append('band', selectedBand);
+    } else {
+        if (autoRefresh) {
+            const now = DateTime.now();
+            const start = now.minus({ hours: 1 });
+            startDate = start.toUTC().toFormat('yyyy-MM-dd HH:mm:ss');
+            endDate = now.toUTC().toFormat('yyyy-MM-dd HH:mm:ss');
+            document.getElementById('start-date').value = start.toFormat("yyyy-MM-dd'T'HH:mm");
+            document.getElementById('end-date').value = now.toFormat("yyyy-MM-dd'T'HH:mm");
+        } else {
+            startDate = document.getElementById('start-date').value;
+            endDate = document.getElementById('end-date').value;
+        }
+
+        const start = DateTime.fromISO(startDate);
+        const end = DateTime.fromISO(endDate);
+
+        if (startDate) {
+            params.append('start_date', autoRefresh ? startDate : start.toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
+        }
+        if (endDate) {
+            params.append('end_date', autoRefresh ? endDate : end.toUTC().toFormat('yyyy-MM-dd HH:mm:ss'));
+        }
     }
 
     try {
         if (currentPage === 'latency') {
-            // Fetch voices (for sidebar labels) and stats (for chart KDEs) in parallel
             const vPromise = fetch('/api/voices?' + params.toString()).then(r => r.json());
             
             let statsParams = new URLSearchParams(params);
@@ -112,6 +118,8 @@ async function fetchData() {
             renderVoiceList();
             renderChart();
         } else {
+            const start = DateTime.fromISO(startDate);
+            const end = DateTime.fromISO(endDate);
             // Traffic page - calculate sensible period
             let period = 60;
             if (autoRefresh) {
@@ -138,6 +146,38 @@ async function fetchData() {
     } catch (e) {
         console.error("Failed to fetch data", e);
     }
+}
+
+async function fetchBands() {
+    try {
+        const response = await fetch('/api/bands');
+        const bands = await response.json();
+        const container = document.getElementById('band-buttons');
+        container.innerHTML = '';
+        bands.forEach(band => {
+            const btn = document.createElement('button');
+            btn.innerText = band === 'all' ? 'All' : band + 'd';
+            btn.onclick = () => setBand(band);
+            btn.id = `band-btn-${band}`;
+            if (band == selectedBand) btn.classList.add('active');
+            container.appendChild(btn);
+        });
+        
+        // Ensure some data is loaded
+        fetchData();
+    } catch (e) {
+        console.error("Failed to fetch bands", e);
+    }
+}
+
+function setBand(band) {
+    selectedBand = band;
+    document.querySelectorAll('#band-buttons button').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    const activeBtn = document.getElementById(`band-btn-${band}`);
+    if (activeBtn) activeBtn.classList.add('active');
+    fetchData();
 }
 
 function processData(statsData, vData) {
@@ -366,6 +406,33 @@ function resetFilters() {
     setRange(30);
 }
 
+async function regenerateStats() {
+    const btn = document.getElementById('regenerate-btn');
+    const spinner = document.getElementById('regenerate-spinner');
+    
+    if (btn.disabled) return;
+
+    btn.disabled = true;
+    spinner.style.display = 'inline-block';
+    
+    try {
+        const response = await fetch('/api/regenerate');
+        const data = await response.json();
+        if (data.status === 'success') {
+            alert('Stats regenerated successfully!');
+            fetchData();
+        } else {
+            alert('Error: ' + data.message);
+        }
+    } catch (e) {
+        console.error("Failed to regenerate stats", e);
+        alert('Failed to regenerate stats. See console for details.');
+    } finally {
+        btn.disabled = false;
+        spinner.style.display = 'none';
+    }
+}
+
 function renderChart() {
     if (currentPage !== 'latency') return;
     d3.select("#chart").selectAll("*").remove();
@@ -441,11 +508,5 @@ function renderChart() {
     });
 }
 
-// Initial range: 30 minutes
-const now = new Date();
-const start = new Date(now.getTime() - 30 * 60000);
-document.getElementById('start-date').value = toISOStringLocal(start);
-document.getElementById('end-date').value = toISOStringLocal(now);
-
 // Initial fetch
-fetchData();
+fetchBands();

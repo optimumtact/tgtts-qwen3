@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 from datetime import datetime, timedelta
@@ -95,11 +96,35 @@ def tts_stats(voice, total_time):
     return {"voice": voice, "data": stats}
 
 
+@app.route("/api/bands")
+def get_bands():
+    return jsonify([1, 2, 3, 5, "all"])
+
+
 @app.route("/api/voices")
 def get_voices():
+    band = request.args.get("band")
+    if band:
+        conn = get_db_connection()
+        # Fetch voices for this band from cache
+        query = "SELECT voice as voice_used, count, p95 FROM cachedstats WHERE timeband = ?"
+        df = pd.read_sql_query(query, conn, params=[band])
+        
+        # We also need global stats for this band to calculate is_slow/is_fast
+        global_query = "SELECT q1, q3 FROM cachedstats WHERE voice = 'global' AND timeband = ?"
+        global_res = conn.execute(global_query, [band]).fetchone()
+        conn.close()
+        
+        global_stats = {"q1": 0, "q3": 0}
+        if global_res:
+            global_stats = {"q1": global_res["q1"], "q3": global_res["q3"]}
+            
+        return jsonify({"global": global_stats, "voices": df.to_dict(orient="records")})
+
     params = []
     query = ""
     start_date = request.args.get("start_date")
+    # ... (rest of the existing logic for custom range)
     end_date = request.args.get("end_date")
     if start_date or end_date:
         query += " WHERE "
@@ -115,6 +140,8 @@ def get_voices():
     conn = get_db_connection()
     df = pd.read_sql_query(final_query, conn, params=params)
     conn.close()
+    if df.empty:
+        return jsonify({"global": {"count": 0, "q3": 0, "q1": 0}, "voices": []})
     # Per-voice aggregation
     voice_stats = (
         df.groupby("voice_used")["total_time"]
@@ -134,48 +161,140 @@ def get_voices():
 
 @app.route("/api/ttsstats")
 def get_tts_stats():
-    start_date = request.args.get("start_date")
-    end_date = request.args.get("end_date")
+    band = request.args.get("band")
     voices = request.args.getlist("voices")
-
-    # Handle both list and comma-separated string
     if voices and len(voices) == 1 and "," in voices[0]:
         voices = voices[0].split(",")
 
-    query = "SELECT * FROM tts_logs"
-    params = []
+    if band:
+        conn = get_db_connection()
+        query = "SELECT * FROM cachedstats WHERE timeband = ? AND (voice = 'global'"
+        params = [band]
+        if voices:
+            query += " OR voice IN ({})".format(",".join(["?"] * len(voices)))
+            params.extend(voices)
+        query += ")"
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        
+        results = []
+        for _, row in df.iterrows():
+            kde = None
+            if row["kde"]:
+                kde_list = json.loads(row["kde"])
+                # Convert back to {"x": [...], "y": [...]}
+                x_vals, y_vals = zip(*kde_list)
+                kde = {"x": list(x_vals), "y": list(y_vals)}
+            
+            results.append({
+                "voice": row["voice"],
+                "data": {
+                    "min": row["min"],
+                    "max": row["max"],
+                    "median": row["median"],
+                    "p95": row["p95"],
+                    "q1": row["q1"],
+                    "q3": row["q3"],
+                    "count": row["count"],
+                    "kde": kde
+                }
+            })
+        return jsonify(results)
 
     start_date = request.args.get("start_date")
-    end_date = request.args.get("end_date")
-    if start_date or end_date:
-        query += " WHERE "
-        if start_date:
-            query += "timestamp >= ?"
-            params.append(start_date)
-        if end_date:
-            if start_date:
-                query += " AND "
-            query += "timestamp <= ?"
-            params.append(end_date)
+    # ... (rest of existing logic)
 
+
+@app.route("/api/regenerate")
+def regenerate_stats():
     conn = get_db_connection()
-    df = pd.read_sql_query(query, conn, params=params)
-    conn.close()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cachedstats (
+                voice TEXT,
+                timeband TEXT,
+                min REAL,
+                max REAL,
+                median REAL,
+                p95 REAL,
+                q1 REAL,
+                q3 REAL,
+                count INTEGER,
+                kde TEXT,
+                PRIMARY KEY (voice, timeband)
+            )
+        """
+        )
 
-    if df.empty:
-        return jsonify([])
+        timebands = [1, 2, 3, 5, "all"]
+        now = datetime.now()
 
-    results = []
-    # If no voices provided, they'll just get the global voice
-    # first the global corpus result set
-    results.append(tts_stats("global", df["total_time"]))
+        for band in timebands:
+            query = "SELECT voice_used, total_time FROM tts_logs"
+            params = []
+            if band != "all":
+                start_date = (now - timedelta(days=int(band))).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                query += " WHERE timestamp >= ?"
+                params.append(start_date)
 
-    for voice in voices:
-        voice_df = df[df["voice_used"] == voice]
-        if voice_df.empty:
-            continue
-        results.append(tts_stats(voice, voice_df["total_time"]))
-    return jsonify(results)
+            df = pd.read_sql_query(query, conn, params=params)
+
+            if df.empty:
+                continue
+
+            # Process Global
+            global_res = tts_stats("global", df["total_time"])
+            _save_to_cache(conn, str(band), global_res)
+
+            # Process Voices
+            for voice in df["voice_used"].unique():
+                voice_df = df[df["voice_used"] == voice]
+                if not voice_df.empty:
+                    voice_res = tts_stats(voice, voice_df["total_time"])
+                    _save_to_cache(conn, str(band), voice_res)
+
+        conn.commit()
+        return jsonify({"status": "success", "message": "Stats regenerated successfully"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+def _save_to_cache(conn, band, stat_result):
+    voice = stat_result["voice"]
+    data = stat_result["data"]
+
+    # "the kde stat should be stored as a json list"
+    kde_json = None
+    if data["kde"]:
+        # Converting {"x": [...], "y": [...]} to [[x1, y1], [x2, y2], ...]
+        kde_list = list(zip(data["kde"]["x"], data["kde"]["y"]))
+        kde_json = json.dumps(kde_list)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO cachedstats 
+        (voice, timeband, min, max, median, p95, q1, q3, count, kde)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+        (
+            voice,
+            band,
+            data["min"],
+            data["max"],
+            data["median"],
+            data["p95"],
+            data["q1"],
+            data["q3"],
+            data["count"],
+            kde_json,
+        ),
+    )
 
 
 @app.route("/")
@@ -239,6 +358,30 @@ HTML_TEMPLATE = """
 
         .controls { display: flex; gap: 10px; align-items: center; padding: 10px 25px; background: #eee; border-bottom: 1px solid #ddd; }
         .controls input { padding: 5px; border: 1px solid #ccc; border-radius: 4px; }
+
+        .spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid #333;
+            border-top: 2px solid transparent;
+            border-radius: 50%;
+            display: inline-block;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        #regenerate-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        button.active {
+            background-color: #232f3e;
+            color: white;
+            border-color: #232f3e;
+        }
     </style>
 </head>
 <body>
@@ -254,7 +397,13 @@ HTML_TEMPLATE = """
         <div id="last-update" style="font-size: 12px; opacity: 0.8;"></div>
     </header>
     <div class="controls">
-        <div id="manual-range-controls" style="display:flex; gap:10px; align-items:center;">
+        <div id="latency-controls" style="display:flex; gap:10px; align-items:center;">
+            <label>Time Band:</label>
+            <div id="band-buttons" style="display:flex; gap:5px;">
+                <!-- Buttons will be injected here -->
+            </div>
+        </div>
+        <div id="manual-range-controls" style="display:none; gap:10px; align-items:center;">
             <div style="display:flex; gap:5px; align-items:center; margin-right: 15px; border-right: 1px solid #ccc; padding-right: 15px;">
                 <label>Quick Range:</label>
                 <button onclick="setRange(30)">30m</button>
@@ -270,6 +419,12 @@ HTML_TEMPLATE = """
             <input type="datetime-local" id="end-date">
             <button onclick="fetchData()">Filter</button>
             <button onclick="resetFilters()">Reset</button>
+        </div>
+        <div style="margin-left: auto; display: flex; align-items: center; gap: 10px;">
+             <button id="regenerate-btn" onclick="regenerateStats()" style="display: flex; align-items: center; gap: 8px;">
+                Regenerate Stats
+                <span id="regenerate-spinner" class="spinner" style="display: none;"></span>
+            </button>
         </div>
     </div>
     
