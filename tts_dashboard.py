@@ -13,10 +13,11 @@ DB_PATH = os.getenv("DB_PATH", "/workspace/tts_stats.db")
 
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    # Increase timeout to 30 seconds to handle potential locks during heavy writes
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=OFF")
+    conn.execute("PRAGMA synchronous=NORMAL")  # NORMAL is safer and works well with WAL
     return conn
 
 
@@ -212,8 +213,51 @@ def get_tts_stats():
 
 @app.route("/api/regenerate")
 def regenerate_stats():
+    # 1. Read all necessary data first
+    conn = get_db_connection()
+    all_dfs = {}
+    timebands = [1, 2, 3, 5, "all"]
+    now = datetime.now()
+    
+    try:
+        for band in timebands:
+            query = "SELECT voice_used, total_time FROM tts_logs"
+            params = []
+            if band != "all":
+                try:
+                    days = int(band)
+                    start_date = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+                    query += " WHERE timestamp >= ?"
+                    params.append(start_date)
+                except ValueError:
+                    pass # 'all' or invalid band
+
+            all_dfs[band] = pd.read_sql_query(query, conn, params=params)
+    finally:
+        conn.close()
+
+    # 2. Process data in-memory (this is the slow CPU-bound part)
+    results_to_save = []
+    for band, df in all_dfs.items():
+        if df.empty:
+            continue
+
+        # Process Global
+        global_res = tts_stats("global", df["total_time"])
+        results_to_save.append((str(band), global_res))
+
+        # Process Voices
+        for voice in df["voice_used"].unique():
+            voice_df = df[df["voice_used"] == voice]
+            if not voice_df.empty:
+                voice_res = tts_stats(voice, voice_df["total_time"])
+                results_to_save.append((str(band), voice_res))
+
+    # 3. Write all results in one quick transaction
     conn = get_db_connection()
     try:
+        # Use BEGIN IMMEDIATE to ensure we get the write lock right away
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS cachedstats (
@@ -232,61 +276,32 @@ def regenerate_stats():
         """
         )
 
-        timebands = [1, 2, 3, 5, "all"]
-        now = datetime.now()
-
-        for band in timebands:
-            query = "SELECT voice_used, total_time FROM tts_logs"
-            params = []
-            if band != "all":
-                start_date = (now - timedelta(days=int(band))).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-                query += " WHERE timestamp >= ?"
-                params.append(start_date)
-
-            df = pd.read_sql_query(query, conn, params=params)
-
-            if df.empty:
-                continue
-
-            # Process Global
-            global_res = tts_stats("global", df["total_time"])
-            _save_to_cache(conn, str(band), global_res)
-
-            # Process Voices
-            for voice in df["voice_used"].unique():
-                voice_df = df[df["voice_used"] == voice]
-                if not voice_df.empty:
-                    voice_res = tts_stats(voice, voice_df["total_time"])
-                    _save_to_cache(conn, str(band), voice_res)
+        _save_batch_to_cache(conn, results_to_save)
 
         conn.commit()
         return jsonify({"status": "success", "message": "Stats regenerated successfully"})
     except Exception as e:
+        if conn:
+            conn.rollback()
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
         conn.close()
 
 
-def _save_to_cache(conn, band, stat_result):
-    voice = stat_result["voice"]
-    data = stat_result["data"]
+def _save_batch_to_cache(conn, results):
+    data_to_insert = []
+    for band, stat_result in results:
+        voice = stat_result["voice"]
+        data = stat_result["data"]
 
-    # "the kde stat should be stored as a json list"
-    kde_json = None
-    if data["kde"]:
-        # Converting {"x": [...], "y": [...]} to [[x1, y1], [x2, y2], ...]
-        kde_list = list(zip(data["kde"]["x"], data["kde"]["y"]))
-        kde_json = json.dumps(kde_list)
-
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO cachedstats 
-        (voice, timeband, min, max, median, p95, q1, q3, count, kde)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-        (
+        # "the kde stat should be stored as a json list"
+        kde_json = None
+        if data["kde"]:
+            # Converting {"x": [...], "y": [...]} to [[x1, y1], [x2, y2], ...]
+            kde_list = list(zip(data["kde"]["x"], data["kde"]["y"]))
+            kde_json = json.dumps(kde_list)
+        
+        data_to_insert.append((
             voice,
             band,
             data["min"],
@@ -297,8 +312,21 @@ def _save_to_cache(conn, band, stat_result):
             data["q3"],
             data["count"],
             kde_json,
-        ),
+        ))
+
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO cachedstats 
+        (voice, timeband, min, max, median, p95, q1, q3, count, kde)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+        data_to_insert,
     )
+
+
+def _save_to_cache(conn, band, stat_result):
+    # Kept for compatibility if needed elsewhere, but redirects to batch
+    _save_batch_to_cache(conn, [(band, stat_result)])
 
 
 @app.route("/")

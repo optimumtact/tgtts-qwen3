@@ -29,9 +29,9 @@ DB_PATH = os.getenv("DB_PATH", "/workspace/tts_stats.db")
 
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=OFF")
+    conn.execute("PRAGMA synchronous=NORMAL")
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -55,9 +55,9 @@ def log_to_db(
     total_time, voice, text, audio_duration, tts_time, normalization_time
 ):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=OFF")
+        conn.execute("PRAGMA synchronous=NORMAL")
         cursor = conn.cursor()
         cursor.execute(
             """
