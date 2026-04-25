@@ -182,10 +182,14 @@ def get_tts_stats():
         for _, row in df.iterrows():
             kde = None
             if row["kde"]:
-                kde_list = json.loads(row["kde"])
-                # Convert back to {"x": [...], "y": [...]}
-                x_vals, y_vals = zip(*kde_list)
-                kde = {"x": list(x_vals), "y": list(y_vals)}
+                try: 
+                    kde_list = json.loads(row["kde"])
+                    # Convert back to {"x": [...], "y": [...]}
+                    x_vals, y_vals = zip(*kde_list)
+                    kde = {"x": list(x_vals), "y": list(y_vals)}
+                except Exception as e:
+                    print(f"Could not load band {band} for voice {row['voice']}")
+                    kde = []
             
             results.append({
                 "voice": row["voice"],
